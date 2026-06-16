@@ -30,6 +30,20 @@ For setup:
 larp setup /path/to/project --apply
 ```
 
+## Install
+
+One command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tdije/larpkeeper/main/install.sh | bash
+```
+
+Or with npm:
+
+```bash
+npm install -g github:tdije/larpkeeper
+```
+
 ## Main Commands
 
 ```bash
@@ -43,13 +57,6 @@ larp pressure /path/to/project --brief
 larp setup /path/to/project --apply
 larp bootstrap /path/to/project --apply
 larp journal /path/to/project --type session --note "..." --apply
-```
-
-## Install
-
-```bash
-npm install
-npm link
 ```
 
 Aliases:
