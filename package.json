@@ -1,0 +1,21 @@
+{
+  "name": "larpkeeper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "larpkeeper": "./bin/context-gardener.mjs",
+    "larp": "./bin/context-gardener.mjs",
+    "lorekeeper": "./bin/context-gardener.mjs",
+    "lore": "./bin/context-gardener.mjs",
+    "context-gardener": "./bin/context-gardener.mjs"
+  },
+  "scripts": {
+    "audit": "node bin/context-gardener.mjs audit",
+    "init": "node bin/context-gardener.mjs init",
+    "pack": "node bin/context-gardener.mjs pack",
+    "journal": "node bin/context-gardener.mjs journal",
+    "validate": "node bin/context-gardener.mjs validate",
+    "test": "node --test test/*.test.mjs"
+  }
+}

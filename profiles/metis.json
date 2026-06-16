@@ -1,0 +1,32 @@
+{
+  "id": "metis",
+  "matchBasenames": ["Metis"],
+  "defaultRead": ["README.md", "PRODUCT.md"],
+  "scoped": [
+    {
+      "match": "rich|studio|webapp|solid|collage|slicer",
+      "read": [
+        "DESIGN.md",
+        "docs/RICH_STUDIO_SOLID_MIGRATION.md",
+        "docs/RICH_STUDIO_PARITY.md",
+        "docs/RICH_STUDIO_COLLAGE_AND_PREVIEW_NOTES.md"
+      ]
+    },
+    {
+      "match": "memory|graphiti|hermes|obsidian|context",
+      "read": [
+        "src/knowledge/MEMORY_SOURCE_CONTRACT.md",
+        "src/knowledge/context-broker.ts",
+        "src/knowledge/context-broker.test.ts",
+        "docs/METIS_HANDOFF.md"
+      ]
+    }
+  ],
+  "denyByDefault": ["INFRASTRUCTURE.md"],
+  "archiveHints": [
+    "PROMPT.md",
+    "docs/METIS_HANDOFF.md",
+    "docs/METIS_ASSISTANT_AUDIT_2026_06_13.md",
+    "docs/TELEGRAM_RICH_MESSAGE_MEDIA_RUNBOOK.md"
+  ]
+}

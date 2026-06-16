@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["id", "defaultRead", "scoped", "denyByDefault", "archiveHints"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "matchBasenames": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "matchRegex": { "type": "string" },
+    "defaultRead": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "scoped": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["match", "read"],
+        "properties": {
+          "match": { "type": "string", "minLength": 1 },
+          "read": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "denyByDefault": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "archiveHints": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": true
+}

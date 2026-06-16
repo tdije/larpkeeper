@@ -1,0 +1,27 @@
+{
+  "id": "driptech-ai-studio",
+  "matchBasenames": ["DripTech Studio AI", "driptech-ai-studio"],
+  "defaultRead": [
+    "AGENTS.md",
+    "docs/AGENT_OPERATING_COMPACT.md",
+    "docs/CURRENT_STATE.md",
+    "handoff.md",
+    "docs/KNOWLEDGE_MAP.md"
+  ],
+  "scoped": [
+    {
+      "match": "webapp|ui|frontend",
+      "read": ["apps/webapp/src/pages/Home.tsx", "docs/DESIGN.md"]
+    },
+    {
+      "match": "proxy|pricing|quota|buyer",
+      "read": ["docs/OPS_DASHBOARD.md", "docs/MEMORY_SOURCE_CONTRACT.md", "~/.hermes/projects/driptech-ai-studio.md"]
+    },
+    {
+      "match": "memory|graphiti|obsidian|hermes",
+      "read": ["docs/MEMORY_SOURCE_CONTRACT.md", "docs/COMPACT_MEMORY_RULES.md", "docs/KNOWLEDGE_MAP.md"]
+    }
+  ],
+  "denyByDefault": [".env", "CLAUDE.md"],
+  "archiveHints": ["docs/PLAN.md", "docs/ARCHITECTURE.md", "STATUS.md"]
+}

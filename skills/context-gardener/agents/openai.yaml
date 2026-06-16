@@ -1,0 +1,3 @@
+interface:
+  display_name: "Larpkeeper"
+  short_description: "Help with Larpkeeper context hygiene tasks"

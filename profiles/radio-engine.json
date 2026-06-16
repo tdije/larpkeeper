@@ -1,0 +1,22 @@
+{
+  "id": "radio-engine",
+  "matchBasenames": ["radio-engine"],
+  "defaultRead": ["docs/CURRENT_STATE.md", "docs/epics/EPICS_INDEX.md"],
+  "scoped": [
+    {
+      "match": "set arranger|arranger|solid|timeline|ui",
+      "read": [
+        "docs/set-arranger-design/README.md",
+        "docs/set-arranger-design/SKILL_ROUTING.md",
+        "docs/epics/EPIC-08-arranger-performance-native-feel.md",
+        "docs/epics/EPIC-09-transition-link-redesign.md"
+      ]
+    },
+    {
+      "match": "deploy|prod|runtime",
+      "read": ["docs/RUNBOOK.md", "handoff.md"]
+    }
+  ],
+  "denyByDefault": [],
+  "archiveHints": ["PROJECT.md", "handoff.md", "docs/DAILY_WORKLOG.md"]
+}

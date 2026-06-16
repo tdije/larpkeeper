@@ -1,0 +1,51 @@
+{
+  "project": "Project Name",
+  "aliases": [],
+  "docsDir": "docs",
+  "archiveDir": "docs/archive/context-heavy",
+  "entrypoints": {
+    "agent": "AGENTS.md",
+    "index": "docs/CONTEXT_INDEX.md",
+    "current": "docs/CURRENT_STATE.md",
+    "worklog": "docs/WORKLOG.md",
+    "decisions": "docs/DECISIONS.md",
+    "journal": "docs/CONTEXT_JOURNAL.md"
+  },
+  "memory": {
+    "hermesProjectCard": null,
+    "graphitiDir": "~/.hermes/graphiti",
+    "graphitiAppend": false
+  },
+  "profile": {
+    "id": "custom",
+    "matchRegex": "Project Name$",
+    "defaultRead": [
+      "AGENTS.md",
+      "docs/CONTEXT_INDEX.md",
+      "docs/CURRENT_STATE.md"
+    ],
+    "scoped": [
+      {
+        "match": "frontend|ui|webapp",
+        "read": ["docs/DESIGN.md"]
+      }
+    ],
+    "denyByDefault": [".env"],
+    "archiveHints": ["docs/archive/context-heavy/"]
+  },
+  "budgets": {
+    "defaultReadFiles": 5,
+    "maxEntrypointLines": 220,
+    "maxActiveDocLines": 260,
+    "largeDocLines": 400
+  },
+  "includeNestedProjects": false,
+  "ignore": [
+    "node_modules",
+    ".git",
+    "dist",
+    "build",
+    ".venv",
+    "tmp"
+  ]
+}
