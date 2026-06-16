@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
 const PROFILE_DIR = path.join(ROOT, 'profiles');
-const GITHUB_PACKAGE_JSON = 'https://raw.githubusercontent.com/tdije/larpkeeper/main/package.json';
+const GITHUB_PACKAGE_JSON = 'https://api.github.com/repos/tdije/larpkeeper/contents/package.json';
 const GITHUB_INSTALL_SPEC = 'github:tdije/larpkeeper';
 const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IGNORE = new Set([
@@ -210,7 +210,7 @@ function packageInfo() {
 
 function fetchText(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'larpkeeper' } }, (res) => {
+    https.get(url, { headers: { 'User-Agent': 'larpkeeper', Accept: 'application/vnd.github.raw' } }, (res) => {
       if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         fetchText(res.headers.location).then(resolve, reject);
         return;
