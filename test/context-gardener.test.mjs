@@ -130,6 +130,19 @@ test('pack is profile-aware and uses task-scoped sources', () => {
   assert.equal(out.readFirst.includes('docs/DESIGN.md'), false);
 });
 
+test('driptech profile respects alternate standard files', () => {
+  const project = tmpProject('DripTech Studio AI');
+  write(path.join(project, 'AGENTS.md'), 4);
+  write(path.join(project, 'docs/AGENT_OPERATING_COMPACT.md'), 4);
+  write(path.join(project, 'docs/KNOWLEDGE_MAP.md'), 4);
+  write(path.join(project, 'docs/DAILY_WORKLOG.md'), 4);
+
+  const out = JSON.parse(run(['audit', project, '--json']));
+
+  assert.equal(out.missing.includes('docs/CONTEXT_INDEX.md'), false);
+  assert.equal(out.missing.includes('docs/WORKLOG.md'), false);
+});
+
 test('empty generic project does not report fake 100 percent savings', () => {
   const project = tmpProject('EmptyGeneric');
   fs.mkdirSync(project, { recursive: true });
@@ -173,6 +186,17 @@ test('policy reference files are not classified as active memory', () => {
 
   assert.match(out, /deep-reference|other/);
   assert.doesNotMatch(out, /active-memory/);
+});
+
+test('pack output includes reasons in normal mode', () => {
+  const project = tmpProject('Metis');
+  write(path.join(project, 'README.md'), 4);
+  write(path.join(project, 'PRODUCT.md'), 4);
+
+  const out = run(['pack', project, '--task', 'readme']);
+
+  assert.match(out, /why:/);
+  assert.match(out, /avoid by default:/);
 });
 
 test('repo validate succeeds once self-dogfood docs and profiles exist', () => {

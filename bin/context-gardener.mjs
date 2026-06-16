@@ -6,7 +6,11 @@ import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
 const PROFILE_DIR = path.join(ROOT, 'profiles');
-const DEFAULT_IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.venv', 'tmp', '.next', 'coverage']);
+const DEFAULT_IGNORE = new Set([
+  'node_modules', '.git', 'dist', 'build', '.venv', 'tmp', '.next', 'coverage',
+  '.cache', '.turbo', '.pytest_cache', '__pycache__', 'vendor',
+]);
+const DEFAULT_IGNORE_PATTERNS = [/^\.venv-/, /^tmp-/, /^cache-/];
 const STANDARD = [
   ['docs/CONTEXT_INDEX.md', 'CONTEXT_INDEX.md'],
   ['docs/CURRENT_STATE.md', 'CURRENT_STATE.md'],
@@ -26,6 +30,16 @@ const GENERIC_PROFILE = {
   scoped: [],
   denyByDefault: [],
   archiveHints: [],
+  standardFiles: {},
+};
+
+const STANDARD_ROLES = {
+  contextIndex: { path: 'docs/CONTEXT_INDEX.md', template: 'CONTEXT_INDEX.md' },
+  currentState: { path: 'docs/CURRENT_STATE.md', template: 'CURRENT_STATE.md' },
+  worklog: { path: 'docs/WORKLOG.md', template: 'WORKLOG.md' },
+  decisions: { path: 'docs/DECISIONS.md', template: 'DECISIONS.md' },
+  journal: { path: 'docs/CONTEXT_JOURNAL.md', template: 'CONTEXT_JOURNAL.md' },
+  archivePolicy: { path: 'docs/archive/context-heavy/README.md', template: 'ARCHIVE_POLICY.md' },
 };
 
 function commandName() {
@@ -253,6 +267,13 @@ function renderProfilesMarkdown() {
       lines.push('Archive hints:');
       for (const file of profile.archiveHints) lines.push(`- \`${file}\``);
     }
+    if (profile.standardFiles && Object.keys(profile.standardFiles).length) {
+      lines.push('');
+      lines.push('Standard files:');
+      for (const [role, file] of Object.entries(profile.standardFiles)) {
+        lines.push(`- ${role}: ${file === null ? 'disabled' : `\`${file}\``}`);
+      }
+    }
     lines.push('');
   }
   return lines.join('\n');
@@ -289,7 +310,7 @@ function profileSync(project, flags = {}) {
 
 function maintenanceStatus(project) {
   const r = audit(project, { quiet: true });
-  const missingStandard = STANDARD.map(([p]) => p).filter((p) => !fs.existsSync(path.join(project, p)));
+  const missingStandard = missingStandardFiles(project);
   const handoffFile = path.join(project, 'handoff.md');
   const handoffLines = fs.existsSync(handoffFile) ? lineCount(handoffFile) : 0;
   const profileRows = loadBundledProfiles();
@@ -367,7 +388,7 @@ function bootstrap(project, flags = {}) {
     files: [],
   };
   const planned = [];
-  for (const [target, template] of STANDARD) {
+  for (const [target, template] of standardTargets(project)) {
     const out = path.join(project, target);
     if (fs.existsSync(out)) continue;
     planned.push(target);
@@ -595,6 +616,7 @@ function normalizeProfile(profile) {
     defaultRead: profile.defaultRead || [],
     denyByDefault: profile.denyByDefault || [],
     archiveHints: profile.archiveHints || [],
+    standardFiles: profile.standardFiles || {},
   };
 }
 
@@ -616,6 +638,7 @@ function walk(dir, cfg, out = [], root = dir) {
   const ignore = new Set([...(cfg.ignore || []), ...DEFAULT_IGNORE]);
   for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
     if (ignore.has(ent.name)) continue;
+    if (DEFAULT_IGNORE_PATTERNS.some((pattern) => pattern.test(ent.name))) continue;
     const full = path.join(dir, ent.name);
     if (ent.isDirectory()) {
       const nestedGit = full !== root && fs.existsSync(path.join(full, '.git'));
@@ -744,6 +767,31 @@ function existing(project, files) {
   return files.filter((f) => f.startsWith('~/') || fs.existsSync(path.join(project, f)));
 }
 
+function standardFilesFor(project) {
+  const p = profileFor(project);
+  return Object.fromEntries(Object.entries(STANDARD_ROLES).map(([role, def]) => {
+    const configured = p.standardFiles?.[role];
+    return [role, configured === null ? null : configured || def.path];
+  }));
+}
+
+function standardTargets(project) {
+  const standards = standardFilesFor(project);
+  return Object.entries(STANDARD_ROLES)
+    .map(([role, def]) => [standards[role], def.template])
+    .filter(([target]) => Boolean(target));
+}
+
+function missingStandardFiles(project) {
+  return standardTargets(project)
+    .map(([target]) => target)
+    .filter((target) => !fs.existsSync(path.join(project, target)));
+}
+
+function standardPath(project, role) {
+  return standardFilesFor(project)[role];
+}
+
 function graphitiStats() {
   const dir = path.join(os.homedir(), '.hermes/graphiti');
   if (!fs.existsSync(dir)) return null;
@@ -765,7 +813,7 @@ function audit(project, flags = {}) {
   }
 
   const exists = (p) => fs.existsSync(path.join(project, p));
-  const missing = STANDARD.map(([p]) => p).filter((p) => !exists(p));
+  const missing = missingStandardFiles(project);
   const considered = files.filter((f) => !['vendor'].includes(classify(f)));
   const large = considered.filter((f) => f.lines > (cfg.budgets?.largeDocLines || 400)).map((f) => ({ path: f.path, lines: f.lines }));
   const duplicateEntrySurfaces = files
@@ -780,7 +828,7 @@ function audit(project, flags = {}) {
   for (const f of large.filter((x) => !x.path.includes('/archive/'))) broadContextFiles.set(f.path, f.lines);
   const broadContextLines = [...broadContextFiles.values()].reduce((sum, lines) => sum + lines, 0);
   const risks = [];
-  if (missing.includes('docs/CONTEXT_INDEX.md')) risks.push('missing-default-context-index');
+  if (standardPath(project, 'contextIndex') && missing.includes(standardPath(project, 'contextIndex'))) risks.push('missing-default-context-index');
   if (large.some((f) => classify(f) !== 'archive')) risks.push('large-active-docs');
   if (duplicateEntrySurfaces.length > 2) risks.push('many-agent-entry-surfaces');
   if (!activeMemory.length) risks.push('missing-active-memory');
@@ -905,7 +953,7 @@ function score(project, flags = {}) {
 
 function init(project, flags = {}) {
   const planned = [];
-  for (const [target, template] of STANDARD) {
+  for (const [target, template] of standardTargets(project)) {
     const out = path.join(project, target);
     if (fs.existsSync(out)) continue;
     planned.push(target);
@@ -1079,6 +1127,16 @@ function pack(project, flags = {}) {
     console.log(`# context pack\n`);
     console.log(`profile: ${pack.profile}`);
     for (const p of pack.readFirst) console.log(`- ${p}`);
+    const reasons = pack.whyIncluded.filter((item) => pack.readFirst.includes(item.path));
+    if (reasons.length) {
+      console.log(`\nwhy:`);
+      for (const item of reasons) console.log(`- ${item.path}: ${item.reason}`);
+    }
+    const avoid = pack.avoidByDefault.filter(Boolean).slice(0, 8);
+    if (avoid.length) {
+      console.log(`\navoid by default:`);
+      for (const item of avoid) console.log(`- ${item}`);
+    }
     console.log(`\nhot context estimate: ${pack.hotContextLines} lines`);
     if (pack.risks.length) console.log(`risks: ${pack.risks.join(', ')}`);
   }
@@ -1296,10 +1354,16 @@ function savings(project, flags = {}) {
 function prune(project, flags = {}) {
   const r = audit(project, { json: true, quiet: true });
   const b = computeBudget(project, flags);
+  const profile = profileFor(project);
+  const authoritative = new Set([
+    ...existing(project, profile.defaultRead),
+    ...profile.scoped.flatMap(([, files]) => existing(project, files)),
+  ]);
   const actions = [];
   for (const f of r.large) {
     const role = classify({ path: f.path });
     if (role === 'agent-skill') actions.push({ action: 'adapter-only-not-default-read', path: f.path, reason: `${f.lines} lines inside skill bundle` });
+    else if (authoritative.has(f.path)) actions.push({ action: 'summarize-or-index-authoritative-doc', path: f.path, reason: `${f.lines} lines but selected by profile` });
     else if (!f.path.includes('/archive/')) actions.push({ action: 'archive-or-split', path: f.path, reason: `${f.lines} lines` });
   }
   if (r.duplicateEntrySurfaces.length > 1) {
@@ -1320,12 +1384,16 @@ function prune(project, flags = {}) {
 }
 
 function update(project, flags = {}) {
+  const currentState = standardPath(project, 'currentState') || 'docs/CURRENT_STATE.md';
+  const worklog = standardPath(project, 'worklog') || 'docs/WORKLOG.md';
+  const journalFile = standardPath(project, 'journal') || 'docs/CONTEXT_JOURNAL.md';
+  const contextIndex = standardPath(project, 'contextIndex') || 'docs/CONTEXT_INDEX.md';
   if (!flags.summary || !flags.type) throw new Error('update requires --summary and --type');
   const routes = {
     decision: ['docs/DECISIONS.md', '~/.hermes/graphiti/canonical_decisions.jsonl'],
-    runtime: ['docs/CURRENT_STATE.md', 'docs/CONTEXT_JOURNAL.md'],
-    progress: ['docs/WORKLOG.md', 'docs/CONTEXT_JOURNAL.md'],
-    research: ['docs/archive/context-heavy/', 'docs/CONTEXT_INDEX.md pointer'],
+    runtime: [currentState, journalFile],
+    progress: [worklog, journalFile],
+    research: ['docs/archive/context-heavy/', `${contextIndex} pointer`],
   };
   const result = {
     project,
@@ -1539,7 +1607,8 @@ function policy() {
 function journal(project, flags = {}) {
   if (!flags.type || !flags.note) throw new Error('journal requires --type and --note');
   const entry = `\n### ${new Date().toISOString()} - ${flags.type}\n\n${flags.note}\n`;
-  const file = path.join(project, 'docs/CONTEXT_JOURNAL.md');
+  const journalRel = standardPath(project, 'journal') || 'docs/CONTEXT_JOURNAL.md';
+  const file = path.join(project, journalRel);
   if (flags.apply) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (!fs.existsSync(file)) fs.copyFileSync(path.join(ROOT, 'templates/CONTEXT_JOURNAL.md'), file);
@@ -1685,17 +1754,20 @@ function validate(project) {
 
 function doctor(project, flags = {}) {
   const r = audit(project, { quiet: true });
+  const contextIndex = standardPath(project, 'contextIndex');
+  const journalRel = standardPath(project, 'journal');
+  const archivePolicy = standardPath(project, 'archivePolicy');
   const checks = [
     ['no-read-everything', r.hotContextLines <= 800, `hot context ${r.hotContextLines} lines`],
-    ['archive-not-delete', fs.existsSync(path.join(project, 'docs/archive/context-heavy/README.md')), 'archive policy should exist before pruning'],
-    ['clear-source-roles', fs.existsSync(path.join(project, 'docs/CONTEXT_INDEX.md')) || fs.existsSync(path.join(project, 'AGENTS.md')), 'needs routing/index source'],
+    ['archive-not-delete', !archivePolicy || fs.existsSync(path.join(project, archivePolicy)), 'archive policy should exist before pruning'],
+    ['clear-source-roles', (contextIndex && fs.existsSync(path.join(project, contextIndex))) || fs.existsSync(path.join(project, 'AGENTS.md')), 'needs routing/index source'],
     ['handoff-compact', !fs.existsSync(path.join(project, 'handoff.md')) || lineCount(path.join(project, 'handoff.md')) <= 260, 'handoff should stay compact'],
     ['skills-router-only', r.duplicateEntrySurfaces.length <= 8, `${r.duplicateEntrySurfaces.length} agent entry surfaces`],
     ['graphiti-safe', true, 'Graphiti writes require explicit --graphiti/--apply'],
     ['contradiction-surface', r.duplicateTerms && Object.keys(r.duplicateTerms).length < 16, `${Object.keys(r.duplicateTerms || {}).length} repeated-term clusters`],
     ['migration-contained', !(r.duplicateTerms.migration && r.duplicateTerms.migration.length > 8), 'migration terms should live in migration docs'],
-    ['fast-session-start', r.missing.includes('docs/CONTEXT_INDEX.md') === false, 'CONTEXT_INDEX enables fast startup'],
-    ['journal-present', fs.existsSync(path.join(project, 'docs/CONTEXT_JOURNAL.md')), 'journal records context changes'],
+    ['fast-session-start', !contextIndex || r.missing.includes(contextIndex) === false, `${contextIndex || 'context index'} enables fast startup`],
+    ['journal-present', !journalRel || fs.existsSync(path.join(project, journalRel)), 'journal records context changes'],
   ].map(([name, ok, detail]) => ({ name, status: ok ? 'pass' : 'warn', detail }));
   const result = { project, checks };
   if (flags.json) console.log(JSON.stringify(result, null, 2));

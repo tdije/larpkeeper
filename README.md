@@ -6,8 +6,8 @@ It keeps project memory small, current, and readable: what matters now, what can
 ## What It Does
 
 - audits context health before broad reading;
-- packs the smallest useful file set for a task;
-- keeps `CURRENT_STATE`, `WORKLOG`, `CONTEXT_INDEX`, and journal files in sync;
+- packs a small profile-aware file set for a task;
+- scaffolds, audits, and journals the context files agents should use;
 - adds thin adapters for AGENTS, Claude, and Codex-style runtimes;
 - warns when context is bloated or stale.
 

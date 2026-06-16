@@ -34,6 +34,15 @@
     "archiveHints": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
+    },
+    "standardFiles": {
+      "type": "object",
+      "additionalProperties": {
+        "anyOf": [
+          { "type": "string", "minLength": 1 },
+          { "type": "null" }
+        ]
+      }
     }
   },
   "additionalProperties": true

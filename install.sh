@@ -9,11 +9,10 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 if command -v larp >/dev/null 2>&1; then
-  echo "Larpkeeper is already installed: $(command -v larp)"
-  exit 0
+  echo "Updating Larpkeeper at $(command -v larp)..."
+else
+  echo "Installing Larpkeeper from GitHub..."
 fi
-
-echo "Installing Larpkeeper from GitHub..."
 npm install -g "github:${REPO}"
 
 echo

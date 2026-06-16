@@ -46,6 +46,14 @@ Archive hints:
 - `docs/ARCHITECTURE.md`
 - `STATUS.md`
 
+Standard files:
+- contextIndex: `docs/KNOWLEDGE_MAP.md`
+- currentState: `docs/CURRENT_STATE.md`
+- worklog: `docs/DAILY_WORKLOG.md`
+- decisions: `docs/DECISIONS.md`
+- journal: disabled
+- archivePolicy: `docs/archive/context-heavy/README.md`
+
 ## metis
 
 Default:
