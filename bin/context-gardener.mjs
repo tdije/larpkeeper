@@ -862,9 +862,11 @@ function printAudit(r) {
   const savings = estimateAuditSavings(r, r.project);
   const next = nextFromAudit(r, r.project);
   const projectName = path.basename(r.project);
+  const verdict = auditVerdict(level, r);
 
   console.log(`${bold('Larpkeeper audit')} ${dim(`(${projectName})`)}`);
   console.log(`${dim('Context map:')} ${statusColor(level)}  ${dim('what is real, what is noise, what to read now')}`);
+  console.log(`\n${verdict}`);
   console.log('');
   console.log(`project        ${r.project}`);
   console.log(`markdown       ${r.markdownCount} files`);
@@ -885,6 +887,9 @@ function printAudit(r) {
   }
   console.log(`task pack      run ${commandName()} pack ${quotePath(r.project)} --task "..."`);
 
+  section('What This Means');
+  console.log(humanAuditSummary(r, savings));
+
   section('Why It Helps');
   bullet('agent starts from ranked sources instead of reading markdown chaos');
   bullet('old research and handoffs stay available but out of hot context');
@@ -904,7 +909,13 @@ function printAudit(r) {
 
   if (r.missing.length) {
     section('Missing Standard Files');
-    for (const p of r.missing) console.log(`- ${p}`);
+    console.log('These are context-maintenance files Larpkeeper expected from this project profile but could not find.');
+    for (const p of r.missing) {
+      const role = standardRoleForPath(r.project, p);
+      console.log(`- ${p}`);
+      console.log(`  purpose: ${standardRolePurpose(role, p)}`);
+      console.log(`  impact: ${standardRoleImpact(role)}`);
+    }
   }
   if (r.duplicateEntrySurfaces.length) {
     section('Agent Entry Surfaces');
@@ -931,6 +942,54 @@ function printAudit(r) {
       console.log(`- ${term}: ${total} hits in ${hits.length} files`);
     }
   }
+}
+
+function auditVerdict(level, r) {
+  if (level === 'ok') return 'Verdict: context looks usable. Use `pack --task "..."` before work and keep going.';
+  if (r.risks.includes('hot-context-over-budget')) return 'Verdict: this repo has useful context, but too much of it is hot. Start from a task pack before reading broad docs.';
+  if (r.missing.length) return 'Verdict: context structure is incomplete. Add the missing context files or configure profile aliases before relying on broad audit output.';
+  return 'Verdict: context is usable, but there are cleanup signals worth checking before long work.';
+}
+
+function humanAuditSummary(r, savings) {
+  const parts = [];
+  parts.push(`Default startup can read about ${savings.afterLines} lines instead of ${savings.beforeLines}, saving roughly ${savings.savedPct}% of broad markdown context.`);
+  if (r.missing.length) parts.push(`${r.missing.length} expected context file${r.missing.length === 1 ? ' is' : 's are'} missing; this usually means new sessions lack a clear routing, worklog, journal, or archive policy layer.`);
+  if (r.duplicateEntrySurfaces.length > 2) parts.push(`${r.duplicateEntrySurfaces.length} agent entry files exist; agents may see overlapping instructions unless one entrypoint routes to the others.`);
+  if (r.large.some((f) => !f.path.includes('/archive/'))) parts.push('Some large active docs should stay scoped to tasks or get compact companion summaries.');
+  if (!r.risks.length) parts.push('No major context-health risks were detected.');
+  return parts.join(' ');
+}
+
+function standardRoleForPath(project, file) {
+  for (const [role, configured] of Object.entries(standardFilesFor(project))) {
+    if (configured === file) return role;
+  }
+  return null;
+}
+
+function standardRolePurpose(role, file) {
+  const purposes = {
+    contextIndex: 'routing map: tells agents which docs to read for which task',
+    currentState: 'current truth: what is real now without old session history',
+    worklog: 'recent continuity: compact done/doing/next/evidence between sessions',
+    decisions: 'decision record: durable choices and constraints',
+    journal: 'maintenance log: records context changes and why they happened',
+    archivePolicy: 'cold-storage policy: explains where old heavy context goes and when to read it',
+  };
+  return purposes[role] || contextFilePurpose(file);
+}
+
+function standardRoleImpact(role) {
+  const impacts = {
+    contextIndex: 'agents may read too broadly or miss the right source of truth',
+    currentState: 'agents may trust stale docs over current runtime reality',
+    worklog: 'session continuity may be lost or overstuffed into handoff files',
+    decisions: 'old debates may be reopened because accepted decisions are hard to find',
+    journal: 'context maintenance changes become hard to audit later',
+    archivePolicy: 'old transcripts and heavy notes may drift back into hot context',
+  };
+  return impacts[role] || 'context hygiene is weaker until this file exists or the profile points elsewhere';
 }
 
 function score(project, flags = {}) {

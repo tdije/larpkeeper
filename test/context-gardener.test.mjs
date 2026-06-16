@@ -244,6 +244,18 @@ test('audit output shows budget and next move', () => {
   assert.match(out, /Next Move/);
 });
 
+test('audit explains missing files in human terms', () => {
+  const project = tmpProject('HumanAudit');
+  fs.mkdirSync(project, { recursive: true });
+
+  const out = run(['audit', project]);
+
+  assert.match(out, /Verdict:/);
+  assert.match(out, /Missing Standard Files/);
+  assert.match(out, /purpose:/);
+  assert.match(out, /impact:/);
+});
+
 test('budget labels default start versus task pack', () => {
   const project = tmpProject('Metis');
   write(path.join(project, 'README.md'), 5);
