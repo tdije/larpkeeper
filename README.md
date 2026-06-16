@@ -44,6 +44,28 @@ Or with npm:
 npm install -g github:tdije/larpkeeper
 ```
 
+## Updates
+
+Larpkeeper checks GitHub at most once per day during normal CLI use. If a newer version exists, it prints a short suggestion:
+
+```bash
+larp upgrade
+```
+
+Manual update commands:
+
+```bash
+larp check-update
+larp upgrade
+larp version
+```
+
+Disable the automatic check:
+
+```bash
+LARPK_NO_UPDATE_CHECK=1 larp audit .
+```
+
 ## Main Commands
 
 ```bash

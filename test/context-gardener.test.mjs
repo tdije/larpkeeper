@@ -19,7 +19,11 @@ function write(file, lines = 1) {
 }
 
 function run(args, cwd = root) {
-  return execFileSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8' });
+  return execFileSync(process.execPath, [cli, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, LARPK_NO_UPDATE_CHECK: '1' },
+  });
 }
 
 test('gather uses bundled Metis profile and keeps Rich Studio handoff out by default', () => {
@@ -293,6 +297,14 @@ test('setup dry-run describes one-command install', () => {
   assert.match(out, /Larpkeeper setup/);
   assert.match(out, /bootstrap standard context files/);
   assert.match(out, /install agents adapter/);
+});
+
+test('version prints package version', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+
+  const out = run(['version']).trim();
+
+  assert.equal(out, `${pkg.name} ${pkg.version}`);
 });
 
 test('statusline is prompt-sized', () => {

@@ -2,10 +2,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import https from 'node:https';
 import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(new URL('..', import.meta.url).pathname);
 const PROFILE_DIR = path.join(ROOT, 'profiles');
+const GITHUB_PACKAGE_JSON = 'https://raw.githubusercontent.com/tdije/larpkeeper/main/package.json';
+const GITHUB_INSTALL_SPEC = 'github:tdije/larpkeeper';
+const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IGNORE = new Set([
   'node_modules', '.git', 'dist', 'build', '.venv', 'tmp', '.next', 'coverage',
   '.cache', '.turbo', '.pytest_cache', '__pycache__', 'vendor',
@@ -130,6 +134,9 @@ Usage:
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
   ${bin} setup <project> [--target agents|claude] [--apply] [--shell-hook]   one-command install
+  ${bin} version                       show installed version
+  ${bin} check-update                  check GitHub for a newer version
+  ${bin} upgrade                       update Larpkeeper from GitHub
   ${bin} bootstrap <project> [--apply]   create the project context skeleton
   ${bin} install-adapter <project> --target agents|claude [--apply]   drop the adapter
   ${bin} pack <project> [--task "..."] [--json]        read now
@@ -195,6 +202,88 @@ function readConfig(project) {
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function packageInfo() {
+  return readJson(path.join(ROOT, 'package.json'));
+}
+
+function fetchText(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'larpkeeper' } }, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        fetchText(res.headers.location).then(resolve, reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode} for ${url}`));
+        res.resume();
+        return;
+      }
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
+
+async function latestPackageInfo() {
+  return JSON.parse(await fetchText(GITHUB_PACKAGE_JSON));
+}
+
+function updateStateFile() {
+  const dir = path.join(os.homedir(), '.larpkeeper');
+  return path.join(dir, 'update-check.json');
+}
+
+function readUpdateState() {
+  try {
+    return JSON.parse(fs.readFileSync(updateStateFile(), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeUpdateState(state) {
+  const file = updateStateFile();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(state, null, 2));
+}
+
+function compareVersions(a, b) {
+  const pa = String(a || '0.0.0').split('.').map((x) => Number.parseInt(x, 10) || 0);
+  const pb = String(b || '0.0.0').split('.').map((x) => Number.parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const da = pa[i] || 0;
+    const db = pb[i] || 0;
+    if (da > db) return 1;
+    if (da < db) return -1;
+  }
+  return 0;
+}
+
+async function maybeNotifyUpdate(cmd, flags = {}) {
+  if (flags.json || flags['no-update-check'] || flags.noUpdateCheck) return;
+  if (process.env.LARPK_NO_UPDATE_CHECK === '1' || process.env.CI) return;
+  if (['upgrade', 'check-update', 'version', 'help'].includes(cmd)) return;
+  const current = packageInfo().version;
+  const state = readUpdateState();
+  const now = Date.now();
+  if (state.lastCheckedAt && now - state.lastCheckedAt < UPDATE_CHECK_TTL_MS) return;
+  writeUpdateState({ ...state, lastCheckedAt: now });
+  try {
+    const latest = await latestPackageInfo();
+    const latestVersion = latest.version;
+    const hasUpdate = compareVersions(latestVersion, current) > 0;
+    writeUpdateState({ lastCheckedAt: now, latestVersion, currentVersion: current, hasUpdate });
+    if (hasUpdate) {
+      console.error(`\nLarpkeeper update available: ${current} -> ${latestVersion}`);
+      console.error(`Run: ${commandName()} upgrade\n`);
+    }
+  } catch {
+    writeUpdateState({ ...state, lastCheckedAt: now, lastErrorAt: now });
+  }
 }
 
 function profileIssues(profile) {
@@ -466,6 +555,50 @@ function setup(project, flags = {}) {
   console.log(`mode: ${flags.apply ? 'applied' : 'dry-run'}`);
   for (const item of planned) console.log(`- ${item}`);
   if (!flags.apply) console.log(`\nnext: ${commandName()} setup ${quotePath(project)} --target ${target} --apply`);
+}
+
+function versionCommand(flags = {}) {
+  const info = packageInfo();
+  const result = { name: info.name, version: info.version, root: ROOT };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else console.log(`${info.name} ${info.version}`);
+}
+
+async function checkUpdate(flags = {}) {
+  const current = packageInfo();
+  const latest = await latestPackageInfo();
+  const hasUpdate = compareVersions(latest.version, current.version) > 0;
+  const result = {
+    current: current.version,
+    latest: latest.version,
+    updateAvailable: hasUpdate,
+    install: `${commandName()} upgrade`,
+  };
+  writeUpdateState({
+    lastCheckedAt: Date.now(),
+    currentVersion: current.version,
+    latestVersion: latest.version,
+    hasUpdate,
+  });
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else if (hasUpdate) {
+    console.log(`Update available: ${current.version} -> ${latest.version}`);
+    console.log(`Run: ${commandName()} upgrade`);
+  } else {
+    console.log(`Larpkeeper is up to date (${current.version}).`);
+  }
+}
+
+function upgrade(flags = {}) {
+  const npm = spawnSync('npm', ['install', '-g', GITHUB_INSTALL_SPEC], { stdio: flags.json ? 'pipe' : 'inherit', encoding: 'utf8' });
+  if (npm.status !== 0) {
+    if (flags.json) console.log(JSON.stringify({ ok: false, status: npm.status, stderr: npm.stderr }, null, 2));
+    process.exitCode = npm.status || 1;
+    return;
+  }
+  writeUpdateState({ lastCheckedAt: Date.now(), upgradedAt: Date.now(), hasUpdate: false });
+  if (flags.json) console.log(JSON.stringify({ ok: true, installed: GITHUB_INSTALL_SPEC }, null, 2));
+  else console.log('Larpkeeper updated.');
 }
 
 function pressureResult(project, flags = {}) {
@@ -1836,8 +1969,9 @@ function doctor(project, flags = {}) {
   }
 }
 
-const { cmd, project, flags } = parse(process.argv.slice(2));
-try {
+async function main() {
+  const { cmd, project, flags } = parse(process.argv.slice(2));
+  await maybeNotifyUpdate(cmd || 'help', flags);
   if (!cmd || cmd === 'help' || flags.help) usage();
   else if (cmd === 'audit') audit(project, flags);
   else if (cmd === 'pitch') pitch(project, flags);
@@ -1845,6 +1979,9 @@ try {
   else if (cmd === 'caveman') caveman(project, flags);
   else if (cmd === 'init') init(project, flags);
   else if (cmd === 'setup') setup(project, flags);
+  else if (cmd === 'version' || cmd === '--version' || cmd === '-v') versionCommand(flags);
+  else if (cmd === 'check-update') await checkUpdate(flags);
+  else if (cmd === 'upgrade' || cmd === 'self-update') upgrade(flags);
   else if (cmd === 'bootstrap') bootstrap(project, flags);
   else if (cmd === 'install-adapter') installAdapter(project, flags);
   else if (cmd === 'pack') pack(project, flags);
@@ -1876,7 +2013,9 @@ try {
   else if (cmd === 'diff-cards') diffCards(project, flags);
   else if (cmd === 'validate') validate(project);
   else throw new Error(`unknown command: ${cmd}`);
-} catch (err) {
+}
+
+main().catch((err) => {
   console.error(`larpkeeper: ${err.message}`);
   process.exit(2);
-}
+});
