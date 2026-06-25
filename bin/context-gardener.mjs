@@ -133,12 +133,12 @@ Usage:
   ${bin} gather <project> [--query "..."] [--role "..."] [--budget 6000] [--json]   read this
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
-  ${bin} setup <project> [--target agents|claude] [--apply] [--shell-hook]   one-command install
+  ${bin} setup <project> [--target agents|claude] [--owner-name NAME] [--apply] [--shell-hook]   one-command install
   ${bin} version                       show installed version
   ${bin} check-update                  check GitHub for a newer version
   ${bin} upgrade                       update Larpkeeper from GitHub
   ${bin} bootstrap <project> [--apply]   create the project context skeleton
-  ${bin} install-adapter <project> --target agents|claude [--apply]   drop the adapter
+  ${bin} install-adapter <project> --target agents|claude [--owner-name NAME] [--apply]   drop the adapter
   ${bin} pack <project> [--task "..."] [--json]        read now
   ${bin} prune <project> [--json]        cut noise
   ${bin} maintain <project> [--apply]    safe maintenance pass
@@ -532,11 +532,13 @@ function setup(project, flags = {}) {
     `install ${target} adapter`,
     `insert managed Larpkeeper block into ${target === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'}`,
   ];
+  if (flags['owner-name'] || flags.ownerName) planned.push(`record owner address form: ${flags['owner-name'] || flags.ownerName}`);
+  else planned.push('owner address form not set; pass --owner-name so agents address the human consistently');
   if (flags['shell-hook'] || flags.shellHook) planned.push('install zsh prompt hook');
 
   if (flags.apply) {
     bootstrap(project, { apply: true });
-    installAdapter(project, { apply: true, target });
+    installAdapter(project, { apply: true, target, 'owner-name': flags['owner-name'] || flags.ownerName });
     if (flags['shell-hook'] || flags.shellHook) installShellHook(project, { apply: true });
     journal(project, {
       type: 'setup',
@@ -554,7 +556,11 @@ function setup(project, flags = {}) {
   console.log(`target: ${target}`);
   console.log(`mode: ${flags.apply ? 'applied' : 'dry-run'}`);
   for (const item of planned) console.log(`- ${item}`);
-  if (!flags.apply) console.log(`\nnext: ${commandName()} setup ${quotePath(project)} --target ${target} --apply`);
+  if (!flags.apply) {
+    console.log(`\nowner name: pass --owner-name to make agents address the human consistently in prompts, updates, reports, and final answers.`);
+    console.log(`why: if an agent loses context or starts producing confused output, the missing or wrong address form is immediately visible.`);
+    console.log(`next: ${commandName()} setup ${quotePath(project)} --target ${target} --owner-name "..." --apply`);
+  }
 }
 
 function versionCommand(flags = {}) {
@@ -1174,7 +1180,7 @@ function installAdapter(project, flags = {}) {
   const [srcRel, dstRel, entryRel] = map[target];
   const dst = path.join(project, dstRel);
   const entry = path.join(project, entryRel);
-  const block = managedAdapterBlock(target, dstRel);
+  const block = managedAdapterBlock(target, dstRel, flags['owner-name'] || flags.ownerName);
   if (flags.apply) {
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     fs.copyFileSync(path.join(ROOT, srcRel), dst);
@@ -1182,10 +1188,22 @@ function installAdapter(project, flags = {}) {
   }
   console.log(`${flags.apply ? 'installed' : 'would install'} ${target} adapter: ${dstRel}`);
   console.log(`${flags.apply ? 'updated' : 'would update'} ${entryRel} with a managed Larpkeeper block.`);
+  if (!(flags['owner-name'] || flags.ownerName)) {
+    console.log(`owner name not set; pass --owner-name so agents address the human consistently and context loss is visible.`);
+  }
 }
 
-function managedAdapterBlock(target, docRel) {
+function managedAdapterBlock(target, docRel, ownerName) {
   const entryName = target === 'claude' ? 'CLAUDE.md' : 'AGENTS.md';
+  const ownerLines = ownerName ? [
+    `Owner address form: \`${ownerName}\`.`,
+    `Address the owner as \`${ownerName}\` in every user-facing prompt, update, report, and final answer.`,
+    'If context seems stale, contradictory, or lost, say that plainly; the address form must remain visible so the human can notice drift.',
+    '',
+  ] : [
+    'Owner address form is not set. Ask the human how to address them before writing persistent project instructions or long reports.',
+    '',
+  ];
   return [
     '<!-- LARPK:START -->',
     '<!-- LARPK:VERSION:0.1 -->',
@@ -1194,6 +1212,7 @@ function managedAdapterBlock(target, docRel) {
     '',
     `This project uses Larpkeeper for context hygiene. Full adapter: \`${docRel}\`.`,
     '',
+    ...ownerLines,
     'Before broad markdown reading:',
     '',
     '```bash',
@@ -1203,6 +1222,8 @@ function managedAdapterBlock(target, docRel) {
     '```',
     '',
     'After `audit`, tell the human: health, cleanup potential, missing files, and next safe command.',
+    'After meaningful completed work, offer or write a compact worklog-style completion: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step.',
+    'Destination policy: repo md gets operational detail; Obsidian gets durable human memory/preferences/cross-project summaries; Graphiti gets compact sourced facts only; chat/DM gets concise rich Markdown for the owner.',
     'Use `--apply` only when the human wants context files changed.',
     'Do not read `docs/archive/context-heavy/` unless the task needs old history or contradiction resolution.',
     '',
@@ -1777,6 +1798,14 @@ function finish(project, flags = {}) {
     }
     console.log(`\nGraphiti candidates:`);
     for (const c of entry.graphitiCandidates) console.log(`- ${c.type}: ${c.fact}`);
+    const taskDone = path.join(project, 'scripts', 'task-done.sh');
+    console.log(`\nCompletion memory:`);
+    console.log(`- worklog shape: what was done; what became better; evidence/tests; deploy/status; next step`);
+    if (fs.existsSync(taskDone)) {
+      console.log(`- available: npm run task:done -- --title "..." --result "..." --tests "..."`);
+    } else {
+      console.log(`- optional: install a project task-memory hook to sync repo worklog, Obsidian, and Graphiti`);
+    }
   }
   if (flags.apply) {
     const note = [

@@ -27,8 +27,10 @@ larp pack /path/to/project --task "fix webapp"
 For setup:
 
 ```bash
-larp setup /path/to/project --apply
+larp setup /path/to/project --owner-name "Your Name" --apply
 ```
+
+`--owner-name` records how agents should address the human in every prompt, update, report, and final answer. This is intentional: if an agent starts losing context or acting confused, the missing or wrong address form is visible immediately.
 
 ## Install
 
@@ -79,6 +81,7 @@ larp pressure /path/to/project --brief
 larp setup /path/to/project --apply
 larp bootstrap /path/to/project --apply
 larp journal /path/to/project --type session --note "..." --apply
+larp finish /path/to/project --done "..." --next "..." --evidence "..." --apply
 ```
 
 Aliases:
@@ -93,6 +96,15 @@ Aliases:
 - source ranking and budget reports
 - zsh statusline hook
 - Codex / Claude / AGENTS adapters
+
+When a project has a task completion hook such as `scripts/task-done.sh`, use it after meaningful completed work to keep repo worklog, Obsidian, and Graphiti aligned. Write simple structured entries: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step. For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise.
+
+Destination policy:
+
+- repo md: operational detail, full worklog, current state changes, decisions, tests, deploy notes, source paths;
+- Obsidian: durable human memory, owner preferences, cross-project summaries, long-lived decisions, links back to repo docs;
+- Graphiti: compact machine-readable sourced facts only, with confidence/currentness; no raw logs or transcripts;
+- chat/DM: concise rich Markdown for the owner with what changed, checks, deploy status, and next step.
 
 ## Repo Structure
 

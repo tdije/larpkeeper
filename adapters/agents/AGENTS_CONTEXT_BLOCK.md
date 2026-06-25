@@ -2,6 +2,8 @@
 
 This project can be maintained with the vendor-neutral `Larpkeeper` CLI.
 
+Owner address form should be set during install with `--owner-name`. Address the owner by that name in every user-facing prompt, update, report, and final answer. This makes context loss or confused behavior visible immediately.
+
 Use it when context is missing, duplicated, stale, or too large:
 
 ```bash
@@ -10,6 +12,7 @@ larp pitch .
 larp recommend .
 larp pack .
 larp journal . --type session --note "..."
+larp finish . --done "..." --next "..." --evidence "..."
 ```
 
 Agent workflow:
@@ -18,6 +21,8 @@ Agent workflow:
 3. Use `larp pack . --task "..."` to choose the smallest read set for the task.
 4. Read archives, long runbooks, and old handoffs only when the pack or task requires them.
 5. Use `--apply` commands only when the human wants context files changed.
+6. After meaningful completed work, offer or write a compact worklog-style completion: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step. If `scripts/task-done.sh` exists, prefer `npm run task:done -- --title "..." --result "..."`.
+7. For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise. Do not omit important completed work, failures, verification gaps, deploy status, or next steps.
 
 Default read order:
 1. `docs/CONTEXT_INDEX.md`
@@ -26,3 +31,6 @@ Default read order:
 4. `docs/WORKLOG.md` only when session continuity matters
 
 Do not read `docs/archive/context-heavy/` unless the task explicitly needs old history or contradiction resolution.
+Do not paste raw logs or transcripts into worklogs, Graphiti, Hermes, or Obsidian; record durable sourced facts.
+
+Destination policy: repo md gets operational detail; Obsidian gets durable human memory/preferences/cross-project summaries; Graphiti gets compact sourced facts only; chat/DM gets concise rich Markdown for the owner.

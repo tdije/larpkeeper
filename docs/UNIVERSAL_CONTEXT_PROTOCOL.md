@@ -21,6 +21,8 @@ Keep project context useful by balancing:
 5. `CONTEXT_JOURNAL.md`: maintenance log.
 6. `archive/context-heavy/`: cold storage.
 7. external memory: Hermes/Graphiti/Obsidian, lower priority than active repo docs.
+8. task completion memory: project-local completion hook when installed, writing repo worklog plus Obsidian/Graphiti durable facts.
+9. owner address form: setup should record how to address the human, so every prompt/update/report/final answer stays visibly tied to the right owner.
 
 ## Agent Adapters
 
@@ -59,6 +61,8 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `conflicts`: show stale-looking files, repeated instructions, and Hermes card drift.
 - `journal`: append durable maintenance events.
 - `finish`: close a session with done/next/evidence and memory candidates.
+- project-local `scripts/task-done.sh`: close meaningful feature/fix/deploy work with one structured completion record when installed.
+- `setup --owner-name "..."`: store the owner address form in the adapter so context loss or confused behavior is visible when the address disappears or changes.
 
 Graphiti/Hermes writes are not a standalone command yet. They are gated behind explicit `--apply --graphiti` on supported write operations.
 
@@ -77,6 +81,16 @@ Allowed writes:
 - archive + compact handoff from `compact-handoff --apply`;
 - explicit session notes from `journal --apply` or `finish --apply`;
 - compact draft from `compact-chat --apply`.
+- project task completion records from `scripts/task-done.sh` or `npm run task:done` when that hook is installed.
+
+## Completion Destination Policy
+
+- Repo md: operational detail, full worklog, current state changes, decisions, tests, deploy notes, source paths.
+- Obsidian: durable human memory, owner preferences, cross-project summaries, long-lived decisions, links back to repo docs.
+- Graphiti: compact machine-readable sourced facts only, with confidence/currentness; no raw logs or transcripts.
+- Chat/DM: concise rich Markdown for the owner with what changed, checks, deploy status, and next step.
+- For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise.
+- Do not omit important completed work, failures, verification gaps, deploy status, decisions/blockers, or next steps.
 
 Everything else should be dry-run/report-only until the human requests application.
 
@@ -96,3 +110,5 @@ The tool should save more tokens than it consumes. Hook integrations should use 
 8. Migrations should separate research, runtime contract, and parity.
 9. New sessions should start from a small context pack.
 10. Projects should improve after each session through journal/update.
+11. Meaningful completed work should leave a simple structured completion: what was done, what became better, evidence/tests, deploy status, and next step.
+12. Agents should address the owner by the configured name in every user-facing prompt/update/report/final answer.

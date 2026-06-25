@@ -39,6 +39,23 @@ If the binary is not installed, run `node "$LARPK_HOME/bin/context-gardener.mjs"
 
 Use `--apply` only when the user explicitly wants files created or changed.
 
+During setup, prefer `--owner-name "..."`. Explain that this stores how to address the human in the managed adapter; agents should use that name in every user-facing prompt, update, report, and final answer, so context loss or confused behavior becomes visible immediately.
+
+When a project has `scripts/task-done.sh`, close meaningful completed work with:
+
+```bash
+npm run task:done -- --title "What changed" --result "What became better" --files "..." --tests "..."
+```
+
+Use plain structured language for the project owner. For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise. Do not omit important facts: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step. Do not paste raw logs or transcripts.
+
+Destination policy:
+
+- repo md: operational detail, full worklog, current state changes, decisions, tests, deploy notes, source paths;
+- Obsidian: durable human memory, owner preferences, cross-project summaries, long-lived decisions, links back to repo docs;
+- Graphiti: compact machine-readable sourced facts only, with confidence/currentness; no raw logs or transcripts;
+- chat/DM: concise rich Markdown for the owner with what changed, checks, deploy status, and next step.
+
 ## Workflow
 
 1. Run `audit` first.
@@ -48,6 +65,7 @@ Use `--apply` only when the user explicitly wants files created or changed.
 5. Run `budget --brief` when the user asks what token/context savings mean.
 6. Run `bootstrap --apply`, `maintain --apply`, or `compact-handoff --apply` only when the user wants files changed.
 7. Run `journal --apply` or `finish --apply` to record durable maintenance evidence.
+8. If `scripts/task-done.sh` exists, use or suggest it after completed project work so repo worklog, Obsidian, and Graphiti stay aligned.
 
 ## Source Priority
 
@@ -61,4 +79,6 @@ Trust sources in this order:
 - Archive before removing from active docs.
 - Keep active docs as indexes, not transcripts.
 - Append journal entries for every applied context change.
+- Prefer project-local task completion memory for completed feature/fix/deploy work when available.
+- Do not let worklog summaries drop important completed work, failures, verification gaps, deploy status, or next steps.
 - If Graphiti is enabled, append only durable facts and include source paths.
