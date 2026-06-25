@@ -43,6 +43,8 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `caveman`: produce an ultra-compact startup layer.
 - `score`: rank files by role, authority, risk, read cost, and recommendation.
 - `gather`: build a task-specific context pack.
+- `repo-map`: build a compact source-code map for the task before opening many files.
+- `tool-guard`: emit safe limits for searches, logs, tool output, and subagent fan-out.
 - `init`: create missing standard files.
 - `setup`: one-command bootstrap + adapter install, optionally shell prompt hook.
 - `bootstrap`: create the project context skeleton.
@@ -98,6 +100,16 @@ Everything else should be dry-run/report-only until the human requests applicati
 
 The tool should save more tokens than it consumes. Hook integrations should use `--brief` or `--json`, not verbose markdown output. See `docs/TOKEN_ECONOMY.md`.
 
+Before broad source reading, broad `rg --files`, long logs, or multi-agent work, agents should run:
+
+```bash
+larp pack . --task "..."
+larp repo-map . --task "..."
+larp tool-guard . --task "..."
+```
+
+Then they should read only the returned docs/source files, expand through exact searches, and keep command output near the guard limits.
+
 ## Ten Health Goals
 
 1. Agents should not read everything by default.
@@ -112,3 +124,4 @@ The tool should save more tokens than it consumes. Hook integrations should use 
 10. Projects should improve after each session through journal/update.
 11. Meaningful completed work should leave a simple structured completion: what was done, what became better, evidence/tests, deploy status, and next step.
 12. Agents should address the owner by the configured name in every user-facing prompt/update/report/final answer.
+13. Agents should use `repo-map` and `tool-guard` before wide code/log exploration.

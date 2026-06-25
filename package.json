@@ -16,6 +16,13 @@
     "pack": "node bin/context-gardener.mjs pack",
     "journal": "node bin/context-gardener.mjs journal",
     "validate": "node bin/context-gardener.mjs validate",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "task:done": "bash scripts/task-done.sh --auto-evidence",
+    "task:doctor": "bash scripts/task-doctor.sh",
+    "task:done:draft": "bash scripts/task-done-draft.sh --auto-evidence",
+    "worklog:daily": "bash scripts/worklog-daily.sh",
+    "followup:memory": "bash scripts/followup-memory.sh",
+    "task:memory:status": "bash scripts/task-memory-status.sh",
+    "task:memory:next": "bash scripts/task-memory-next.sh"
   }
 }

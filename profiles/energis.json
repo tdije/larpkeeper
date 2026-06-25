@@ -1,0 +1,45 @@
+{
+  "id": "energis",
+  "matchBasenames": ["ENERGIS", "energis"],
+  "matchRegex": "ENERGIS$|energis$",
+  "defaultRead": [
+    "AGENTS.md",
+    "README.md",
+    "docs/CONTEXT_INDEX.md",
+    "docs/CURRENT_STATE.md"
+  ],
+  "scoped": [
+    {
+      "match": "frontend|ui|web|app|solid|react",
+      "read": [
+        "docs/DESIGN.md",
+        "docs/FRONTEND.md"
+      ]
+    },
+    {
+      "match": "deploy|prod|runtime|server|docker",
+      "read": [
+        "docs/RUNBOOK.md",
+        "handoff.md"
+      ]
+    },
+    {
+      "match": "memory|graphiti|obsidian|worklog|context",
+      "read": [
+        "docs/WORKLOG.md",
+        "docs/DECISIONS.md",
+        "docs/CONTEXT_JOURNAL.md"
+      ]
+    }
+  ],
+  "denyByDefault": [
+    ".env",
+    ".env.local",
+    "secrets.md"
+  ],
+  "archiveHints": [
+    "handoff.md",
+    "docs/archive/context-heavy/README.md",
+    "docs/DAILY_WORKLOG.md"
+  ]
+}

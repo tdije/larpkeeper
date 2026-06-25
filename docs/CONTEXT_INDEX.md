@@ -12,3 +12,7 @@ Start here:
 6. `docs/CONTEXT_JOURNAL.md`
 
 Use `larp audit .` before broad edits.
+
+## Task Completion Memory
+
+- Task completion memory: use `scripts/task-done.sh` or `npm run task:done` to write repo worklog, Obsidian, and Graphiti records after meaningful completed work.

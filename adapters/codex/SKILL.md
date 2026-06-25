@@ -30,6 +30,8 @@ larp audit /path/to/project
 larp pitch /path/to/project
 larp recommend /path/to/project
 larp pack /path/to/project --task "..."
+larp repo-map /path/to/project --task "..."
+larp tool-guard /path/to/project --task "..."
 larp bootstrap /path/to/project
 larp maintain /path/to/project
 larp journal /path/to/project --type session --note "..."
@@ -62,10 +64,12 @@ Destination policy:
 2. Run `pitch` or produce the same value summary: before/default-start, avoided percent/tokens, why it matters, top risks, missing files, and next safe command.
 3. Run `recommend` when the next maintenance move is unclear.
 4. Run `pack --task "..."` before implementation and read only the returned files plus touched source files.
-5. Run `budget --brief` when the user asks what token/context savings mean.
-6. Run `bootstrap --apply`, `maintain --apply`, or `compact-handoff --apply` only when the user wants files changed.
-7. Run `journal --apply` or `finish --apply` to record durable maintenance evidence.
-8. If `scripts/task-done.sh` exists, use or suggest it after completed project work so repo worklog, Obsidian, and Graphiti stay aligned.
+5. Run `repo-map --task "..."` before broad source reading; expand from that map through exact `rg -n` searches only.
+6. Run `tool-guard --task "..."` before long logs, broad searches, or multi-agent work and keep outputs inside its recommended limits.
+7. Run `budget --brief` when the user asks what token/context savings mean.
+8. Run `bootstrap --apply`, `maintain --apply`, or `compact-handoff --apply` only when the user wants files changed.
+9. Run `journal --apply` or `finish --apply` to record durable maintenance evidence.
+10. If `scripts/task-done.sh` exists, use or suggest it after completed project work so repo worklog, Obsidian, and Graphiti stay aligned.
 
 ## Source Priority
 
@@ -76,6 +80,8 @@ Trust sources in this order:
 ## Safety
 
 - Never delete context automatically.
+- Do not run broad `rg --files`, broad `rg`, long container logs, or more than one subagent before `pack` and `repo-map`.
+- Prefer exact searches and compact log tails around 80 lines; summarize raw outputs instead of copying them into chat/memory.
 - Archive before removing from active docs.
 - Keep active docs as indexes, not transcripts.
 - Append journal entries for every applied context change.

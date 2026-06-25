@@ -196,11 +196,43 @@ test('pack output includes reasons in normal mode', () => {
   const project = tmpProject('Metis');
   write(path.join(project, 'README.md'), 4);
   write(path.join(project, 'PRODUCT.md'), 4);
+  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'src/media-editor.ts'), 'export function stretchVideo() { return true; }\n');
 
   const out = run(['pack', project, '--task', 'readme']);
 
   assert.match(out, /why:/);
+  assert.match(out, /repo map:/);
+  assert.match(out, /tool guard:/);
   assert.match(out, /avoid by default:/);
+});
+
+test('repo-map returns compact task-focused source symbols', () => {
+  const project = tmpProject('RepoMap');
+  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'src/editor.ts'), [
+    'export function stretchVertical() { return "ok"; }',
+    'export class MediaPlanner {}',
+  ].join('\n'));
+  fs.writeFileSync(path.join(project, 'src/other.ts'), 'export function unrelatedThing() { return false; }\n');
+
+  const out = JSON.parse(run(['repo-map', project, '--task', 'stretch vertical', '--json']));
+
+  assert.equal(out.sourceFilesScanned, 2);
+  assert.equal(out.includedFiles[0].path, 'src/editor.ts');
+  assert.ok(out.includedFiles[0].symbols.includes('stretchVertical'));
+  assert.ok(out.estimatedTokens <= out.budgetTokens);
+});
+
+test('tool-guard gives compact limits for broad work', () => {
+  const project = tmpProject('ToolGuard');
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+
+  const out = JSON.parse(run(['tool-guard', project, '--task', 'debug docker logs', '--json']));
+
+  assert.equal(out.logTailLines, 80);
+  assert.equal(out.maxOutputTokens <= 12000, true);
+  assert.ok(out.beforeBroadWork.some((cmd) => cmd.includes('repo-map')));
 });
 
 test('repo validate succeeds once self-dogfood docs and profiles exist', () => {
@@ -285,6 +317,8 @@ test('install-adapter writes managed block into AGENTS.md', () => {
 
   assert.match(agents, /LARPK:START/);
   assert.match(agents, /larp audit \./);
+  assert.match(agents, /larp repo-map \./);
+  assert.match(agents, /tool-guard/);
   assert.equal(fs.existsSync(path.join(project, 'docs/AGENT_CONTEXT.md')), true);
 });
 

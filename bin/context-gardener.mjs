@@ -15,6 +15,24 @@ const DEFAULT_IGNORE = new Set([
   '.cache', '.turbo', '.pytest_cache', '__pycache__', 'vendor',
 ]);
 const DEFAULT_IGNORE_PATTERNS = [/^\.venv-/, /^tmp-/, /^cache-/];
+const SOURCE_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.go', '.rs', '.java', '.kt', '.swift',
+  '.php', '.rb', '.cs', '.c', '.cc', '.cpp', '.h', '.hpp',
+  '.svelte', '.vue', '.astro', '.sql', '.sh', '.css', '.scss',
+]);
+const TOOL_GUARD_DEFAULTS = {
+  maxOutputTokens: 12000,
+  broadSearchMaxOutputTokens: 8000,
+  logTailLines: 80,
+  maxSubagentsBeforePack: 1,
+};
+const SOURCE_SKIP_PREFIXES = [
+  '.agents/skills/',
+  '.claude/skills/',
+  '.codex/plugins/',
+  '.codex/skills/',
+];
 const STANDARD = [
   ['docs/CONTEXT_INDEX.md', 'CONTEXT_INDEX.md'],
   ['docs/CURRENT_STATE.md', 'CURRENT_STATE.md'],
@@ -131,6 +149,8 @@ Usage:
   ${bin} audit <project> [--json]        what's real?
   ${bin} pitch <project>                 explain audit value for humans
   ${bin} gather <project> [--query "..."] [--role "..."] [--budget 6000] [--json]   read this
+  ${bin} repo-map <project> [--task "..."] [--budget 4000] [--json]   compact code map
+  ${bin} tool-guard <project> [--task "..."] [--json]   safe search/log/tool limits
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
   ${bin} setup <project> [--target agents|claude] [--owner-name NAME] [--apply] [--shell-hook]   one-command install
@@ -820,6 +840,224 @@ function mdFiles(project, cfg) {
   }));
 }
 
+function isSourceFile(file) {
+  return SOURCE_EXTENSIONS.has(path.extname(file).toLowerCase());
+}
+
+function sourceFiles(project, cfg) {
+  return walk(project, cfg)
+    .filter(isSourceFile)
+    .map((f) => {
+      const stat = fs.statSync(f);
+      return {
+        path: rel(project, f),
+        abs: f,
+        lines: lineCount(f),
+        mtimeMs: stat.mtimeMs,
+        ageDays: Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 86400000)),
+      };
+    })
+    .filter((f) => !SOURCE_SKIP_PREFIXES.some((prefix) => f.path.startsWith(prefix)));
+}
+
+function queryTerms(value = '') {
+  return String(value)
+    .toLowerCase()
+    .split(/[^a-zа-яё0-9_./-]+/iu)
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 3);
+}
+
+function extractSymbols(file, text) {
+  const ext = path.extname(file).toLowerCase();
+  const patterns = [];
+  if (['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.svelte', '.vue', '.astro'].includes(ext)) {
+    patterns.push(
+      /\bexport\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g,
+      /\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/g,
+      /\bexport\s+class\s+([A-Za-z_$][\w$]*)/g,
+      /\bclass\s+([A-Za-z_$][\w$]*)/g,
+      /\bexport\s+(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g,
+      /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/g
+    );
+  } else if (ext === '.py') {
+    patterns.push(/^\s*def\s+([A-Za-z_]\w*)\s*\(/gm, /^\s*class\s+([A-Za-z_]\w*)\s*[:(]/gm);
+  } else if (ext === '.go') {
+    patterns.push(/\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(/g, /\btype\s+([A-Za-z_]\w*)\s+(?:struct|interface)\b/g);
+  } else if (ext === '.rs') {
+    patterns.push(/\b(?:pub\s+)?fn\s+([A-Za-z_]\w*)\s*\(/g, /\b(?:pub\s+)?(?:struct|enum|trait)\s+([A-Za-z_]\w*)\b/g);
+  } else {
+    patterns.push(/\b(?:class|function)\s+([A-Za-z_]\w*)\b/g);
+  }
+  const symbols = [];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) && symbols.length < 24) {
+      if (!symbols.includes(match[1])) symbols.push(match[1]);
+    }
+  }
+  return symbols;
+}
+
+function scoreSourceForTask(file, symbols, terms) {
+  const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
+  let score = 0;
+  for (const term of terms) if (hay.includes(term)) score += 50;
+  if (/^(src|app|apps|packages|server|bot|lib)\//.test(file.path)) score += 12;
+  if (/(test|spec)\.[^.]+$/.test(file.path) || file.path.includes('/test/')) score += terms.includes('test') ? 18 : -8;
+  if (file.path.includes('/scripts/')) score += 4;
+  if (file.lines > 0 && file.lines <= 240) score += 8;
+  if (file.lines > 600) score -= 12;
+  if (file.ageDays <= 14) score += 4;
+  return score;
+}
+
+function estimateTextTokens(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
+
+function buildRepoMap(project, flags = {}) {
+  const cfg = readConfig(project);
+  const task = flags.task || flags.query || '';
+  const terms = queryTerms(task);
+  const budgetTokens = Math.max(800, Number(flags.budget || flags['repo-map-budget'] || flags.repoMapBudget || 4000));
+  const rows = sourceFiles(project, cfg).map((file) => {
+    let text = '';
+    try { text = fs.readFileSync(file.abs, 'utf8'); } catch {}
+    const symbols = extractSymbols(file.path, text);
+    const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
+    const termMatches = terms.filter((term) => hay.includes(term)).length;
+    return {
+      path: file.path,
+      lines: file.lines,
+      symbols: symbols.slice(0, 10),
+      score: scoreSourceForTask(file, symbols, terms),
+      termMatches,
+    };
+  }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+
+  const included = [];
+  let estimatedTokens = 250;
+  for (const row of rows) {
+    const symbolText = row.symbols.length ? row.symbols.join(', ') : 'no exported symbols found';
+    const line = `- ${row.path} (${row.lines}l) symbols: ${symbolText}`;
+    const cost = estimateTextTokens(line) + 8;
+    if (included.length >= 80 || (included.length >= 8 && estimatedTokens + cost > budgetTokens)) break;
+    included.push({
+      path: row.path,
+      lines: row.lines,
+      symbols: row.symbols,
+      reason: row.termMatches > 0 ? 'task/path/symbol match' : 'high-signal source file',
+    });
+    estimatedTokens += cost;
+  }
+
+  return {
+    project,
+    task: task || null,
+    budgetTokens,
+    estimatedTokens,
+    sourceFilesScanned: rows.length,
+    includedFiles: included,
+    omittedFiles: Math.max(0, rows.length - included.length),
+    command: `${commandName()} repo-map ${quotePath(project)} --task ${JSON.stringify(task || '...')}`,
+    readStrategy: 'Read repo-map first, then only listed files plus direct dependencies discovered by exact search.',
+  };
+}
+
+function formatRepoMap(map) {
+  const lines = [
+    '# repo map',
+    '',
+    `project: ${path.basename(map.project)}`,
+    `task: ${map.task || '-'}`,
+    `budget: ~${map.budgetTokens} tokens`,
+    `estimated: ~${map.estimatedTokens} tokens`,
+    `source files scanned: ${map.sourceFilesScanned}`,
+    `omitted: ${map.omittedFiles}`,
+    '',
+    'read strategy:',
+    `- ${map.readStrategy}`,
+    '- use exact `rg -n "term"` from this map before opening more files',
+    '- do not dump full file lists or long logs into chat',
+    '',
+    'top source files:',
+  ];
+  if (!map.includedFiles.length) lines.push('- no source files found');
+  for (const f of map.includedFiles) {
+    const symbols = f.symbols.length ? f.symbols.join(', ') : 'no exported symbols found';
+    lines.push(`- ${f.path} (${f.lines}l) symbols: ${symbols}`);
+  }
+  return lines.join('\n');
+}
+
+function repoMap(project, flags = {}) {
+  const result = buildRepoMap(project, flags);
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else console.log(formatRepoMap(result));
+  return result;
+}
+
+function buildToolGuard(project, flags = {}) {
+  const task = flags.task || flags.query || null;
+  const pressure = pressureResult(project, {
+    tokens: flags.tokens || 0,
+    'max-tokens': flags['max-tokens'] || flags.maxTokens || 0,
+    messages: flags.messages || 0,
+    'tool-lines': flags['tool-lines'] || flags.toolLines || 0,
+  });
+  const highPressure = ['compact-soon', 'compact-now'].includes(pressure.level);
+  const maxOutputTokens = highPressure ? 6000 : TOOL_GUARD_DEFAULTS.maxOutputTokens;
+  const broadSearchMaxOutputTokens = highPressure ? 4000 : TOOL_GUARD_DEFAULTS.broadSearchMaxOutputTokens;
+  return {
+    project,
+    task,
+    pressureLevel: pressure.level,
+    maxOutputTokens,
+    broadSearchMaxOutputTokens,
+    logTailLines: TOOL_GUARD_DEFAULTS.logTailLines,
+    maxSubagentsBeforePack: TOOL_GUARD_DEFAULTS.maxSubagentsBeforePack,
+    beforeBroadWork: [
+      `${commandName()} pack ${quotePath(project)} --task ${JSON.stringify(task || '...')}`,
+      `${commandName()} repo-map ${quotePath(project)} --task ${JSON.stringify(task || '...')}`,
+    ],
+    rules: [
+      'Run pack + repo-map before broad source reading, multi-agent work, or long debug loops.',
+      'Prefer exact `rg -n "symptom|symbol"` over full `rg --files` dumps.',
+      `Tail logs to ${TOOL_GUARD_DEFAULTS.logTailLines} lines unless the task explicitly needs more.`,
+      'Summarize command output; do not paste raw logs/transcripts into worklogs, Graphiti, Obsidian, or chat.',
+      'If output is still large, rerun with narrower terms instead of increasing the output budget.',
+    ],
+  };
+}
+
+function formatToolGuard(guard) {
+  return [
+    '# tool guard',
+    '',
+    `project: ${path.basename(guard.project)}`,
+    `task: ${guard.task || '-'}`,
+    `pressure: ${guard.pressureLevel}`,
+    `max_output_tokens: ${guard.maxOutputTokens}`,
+    `broad_search_max_output_tokens: ${guard.broadSearchMaxOutputTokens}`,
+    `log_tail_lines: ${guard.logTailLines}`,
+    `max_subagents_before_pack: ${guard.maxSubagentsBeforePack}`,
+    '',
+    'before broad work:',
+    ...guard.beforeBroadWork.map((cmd) => `- ${cmd}`),
+    '',
+    'rules:',
+    ...guard.rules.map((rule) => `- ${rule}`),
+  ].join('\n');
+}
+
+function toolGuard(project, flags = {}) {
+  const result = buildToolGuard(project, flags);
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else console.log(formatToolGuard(result));
+  return result;
+}
+
 function classify(file) {
   const p = file.path.toLowerCase();
   const base = path.basename(p, '.md');
@@ -1213,15 +1451,19 @@ function managedAdapterBlock(target, docRel, ownerName) {
     `This project uses Larpkeeper for context hygiene. Full adapter: \`${docRel}\`.`,
     '',
     ...ownerLines,
-    'Before broad markdown reading:',
+    'Before broad markdown/source reading, long logs, or multi-agent work:',
     '',
     '```bash',
     'larp audit .',
     'larp recommend .',
     'larp pack . --task "..."',
+    'larp repo-map . --task "..."',
+    'larp tool-guard . --task "..."',
     '```',
     '',
     'After `audit`, tell the human: health, cleanup potential, missing files, and next safe command.',
+    'Before `rg --files`, broad `rg`, Docker/container logs over 80 lines, or more than one subagent: run `pack` + `repo-map`, then read only the returned docs/source files and exact-search dependencies.',
+    'Keep shell outputs compact: prefer exact searches, `--tail 80` for logs, and `max_output_tokens` near the `tool-guard` recommendation. Summarize outputs instead of pasting raw logs.',
     'After meaningful completed work, offer or write a compact worklog-style completion: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step.',
     'Destination policy: repo md gets operational detail; Obsidian gets durable human memory/preferences/cross-project summaries; Graphiti gets compact sourced facts only; chat/DM gets concise rich Markdown for the owner.',
     'Use `--apply` only when the human wants context files changed.',
@@ -1318,11 +1560,27 @@ function launchCodex(project, flags = {}) {
 function pack(project, flags = {}) {
   const g = buildGather(project, { ...flags, query: flags.query || flags.task });
   const read = g.recommendedContextPack;
+  const repo = buildRepoMap(project, { ...flags, budget: flags['repo-map-budget'] || flags.repoMapBudget || 2500 });
+  const guard = buildToolGuard(project, flags);
   const pack = {
     project,
     task: flags.task || null,
     profile: g.profile,
     readFirst: read,
+    repoMap: {
+      command: repo.command,
+      budgetTokens: repo.budgetTokens,
+      estimatedTokens: repo.estimatedTokens,
+      topFiles: repo.includedFiles.slice(0, 12),
+      omittedFiles: repo.omittedFiles,
+    },
+    toolGuard: {
+      maxOutputTokens: guard.maxOutputTokens,
+      broadSearchMaxOutputTokens: guard.broadSearchMaxOutputTokens,
+      logTailLines: guard.logTailLines,
+      beforeBroadWork: guard.beforeBroadWork,
+      rules: guard.rules,
+    },
     avoidByDefault: [
       ...g.denyByDefault,
       ...g.archiveCandidates.slice(0, 12),
@@ -1345,6 +1603,18 @@ function pack(project, flags = {}) {
       console.log(`\nwhy:`);
       for (const item of reasons) console.log(`- ${item.path}: ${item.reason}`);
     }
+    if (pack.repoMap.topFiles.length) {
+      console.log(`\nrepo map:`);
+      console.log(`- ${pack.repoMap.command}`);
+      for (const item of pack.repoMap.topFiles.slice(0, 8)) {
+        const symbols = item.symbols.length ? ` symbols: ${item.symbols.join(', ')}` : '';
+        console.log(`- ${item.path} (${item.lines}l)${symbols}`);
+      }
+    }
+    console.log(`\ntool guard:`);
+    console.log(`- max_output_tokens: ${pack.toolGuard.maxOutputTokens}`);
+    console.log(`- broad search max_output_tokens: ${pack.toolGuard.broadSearchMaxOutputTokens}`);
+    console.log(`- log tail: ${pack.toolGuard.logTailLines} lines`);
     const avoid = pack.avoidByDefault.filter(Boolean).slice(0, 8);
     if (avoid.length) {
       console.log(`\navoid by default:`);
@@ -2005,6 +2275,8 @@ async function main() {
   else if (cmd === 'audit') audit(project, flags);
   else if (cmd === 'pitch') pitch(project, flags);
   else if (cmd === 'gather') gather(project, flags);
+  else if (cmd === 'repo-map' || cmd === 'map') repoMap(project, flags);
+  else if (cmd === 'tool-guard' || cmd === 'guard') toolGuard(project, flags);
   else if (cmd === 'caveman') caveman(project, flags);
   else if (cmd === 'init') init(project, flags);
   else if (cmd === 'setup') setup(project, flags);

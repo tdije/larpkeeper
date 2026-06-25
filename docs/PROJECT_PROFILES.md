@@ -54,6 +54,29 @@ Standard files:
 - journal: disabled
 - archivePolicy: `docs/archive/context-heavy/README.md`
 
+## energis
+
+Default:
+- `AGENTS.md`
+- `README.md`
+- `docs/CONTEXT_INDEX.md`
+- `docs/CURRENT_STATE.md`
+
+Scoped:
+- `frontend|ui|web|app|solid|react` -> `docs/DESIGN.md`, `docs/FRONTEND.md`
+- `deploy|prod|runtime|server|docker` -> `docs/RUNBOOK.md`, `handoff.md`
+- `memory|graphiti|obsidian|worklog|context` -> `docs/WORKLOG.md`, `docs/DECISIONS.md`, `docs/CONTEXT_JOURNAL.md`
+
+Skip by default:
+- `.env`
+- `.env.local`
+- `secrets.md`
+
+Archive hints:
+- `handoff.md`
+- `docs/archive/context-heavy/README.md`
+- `docs/DAILY_WORKLOG.md`
+
 ## metis
 
 Default:
