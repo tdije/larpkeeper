@@ -235,6 +235,62 @@ test('tool-guard gives compact limits for broad work', () => {
   assert.ok(out.beforeBroadWork.some((cmd) => cmd.includes('repo-map')));
 });
 
+test('codex-preflight combines pack repo map and guard', () => {
+  const project = tmpProject('Preflight');
+  write(path.join(project, 'AGENTS.md'), 3);
+  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'src/router.ts'), 'export function routeTokenBudget() { return true; }\n');
+
+  const out = JSON.parse(run(['codex-preflight', project, '--task', 'token budget route', '--json']));
+
+  assert.ok(out.readFirst.includes('AGENTS.md'));
+  assert.ok(out.repoMapTopFiles.some((f) => f.path === 'src/router.ts'));
+  assert.equal(out.guard.logTailLines, 80);
+});
+
+test('semantic-search finds source by symbols without broad output', () => {
+  const project = tmpProject('Semantic');
+  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'src/rich-post.ts'), 'export function publishRichPost() { return "ok"; }\n');
+
+  const out = JSON.parse(run(['semantic-search', project, '--query', 'publish rich post', '--json']));
+
+  assert.equal(out.mode, 'semantic-lite');
+  assert.equal(out.results[0].path, 'src/rich-post.ts');
+});
+
+test('compress-output redacts secrets and summarizes noisy logs', () => {
+  const project = tmpProject('Compress');
+  fs.mkdirSync(project, { recursive: true });
+  const log = path.join(project, 'log.txt');
+  fs.writeFileSync(log, [
+    'ok',
+    'src/app.ts:10: failed to run',
+    'Authorization: sk-secretvalue1234567890',
+    'Error: boom',
+  ].join('\n'));
+
+  const out = JSON.parse(run(['compress-output', project, '--file', 'log.txt', '--json']));
+
+  assert.equal(out.inputLines, 4);
+  assert.ok(out.errorLines.some((line) => line.includes('Error')));
+  assert.doesNotMatch(JSON.stringify(out), /sk-secretvalue/);
+});
+
+test('token-burn reads only safe sqlite aggregates', () => {
+  const project = tmpProject('TokenBurn');
+  fs.mkdirSync(project, { recursive: true });
+  const db = path.join(project, 'codex.sqlite');
+  execFileSync('sqlite3', [db, 'create table logs(id integer primary key, ts integer not null, ts_nanos integer not null, level text not null, target text not null, feedback_log_body text, module_path text, file text, line integer, thread_id text, process_uuid text, estimated_bytes integer not null default 0);']);
+  execFileSync('sqlite3', [db, "insert into logs(ts,ts_nanos,level,target,feedback_log_body,module_path,file,estimated_bytes) values (2000000000,0,'INFO','tool','SECRET_BODY','tool.exec','src/app.ts',4000);"]);
+
+  const out = JSON.parse(run(['token-burn', project, '--since', '1', '--db', db, '--json']));
+
+  assert.equal(out.totals.estimatedTokens, 1000);
+  assert.equal(out.topTargets[0].target, 'tool');
+  assert.doesNotMatch(JSON.stringify(out), /SECRET_BODY/);
+});
+
 test('repo validate succeeds once self-dogfood docs and profiles exist', () => {
   const out = run(['validate', '.']).trim();
 

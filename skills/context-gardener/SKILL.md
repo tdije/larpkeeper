@@ -11,9 +11,13 @@ Lean adapter for the vendor-neutral `Larpkeeper` CLI. Do not read broad project 
 
 ```bash
 larp audit /path/to/project
+larp codex-preflight /path/to/project --task "..."
 larp pack /path/to/project --task "..."
 larp repo-map /path/to/project --task "..."
 larp tool-guard /path/to/project --task "..."
+larp semantic-search /path/to/project --query "..."
+larp compress-output /path/to/project --file log.txt
+larp token-burn /path/to/project --since today
 larp recommend /path/to/project
 larp maintain /path/to/project --apply
 larp budget /path/to/project --brief
@@ -46,14 +50,18 @@ Destination policy:
 When Larpkeeper is relevant, use it as the context gate before broad reading:
 
 1. Run `larp audit <project>` and show the user the useful parts: health, cleanup potential, missing files, and next command.
-2. Run `larp recommend <project>` when the next step is unclear.
-3. Run `larp pack <project> --task "..."` before implementation, then read only that pack plus touched files.
-4. Run `larp repo-map <project> --task "..."` before broad source reading. Use the returned source files as the first code map, then expand only through exact searches.
-5. Run `larp tool-guard <project> --task "..."` before long logs, broad searches, or multi-agent work; obey its output limits unless the user explicitly asks for a deeper dump.
-6. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
-7. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
-8. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
-9. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
+2. Run `larp codex-preflight <project> --task "..."` at the start of coding work when the task is known.
+3. Run `larp recommend <project>` when the next step is unclear.
+4. Run `larp pack <project> --task "..."` before implementation, then read only that pack plus touched files.
+5. Run `larp repo-map <project> --task "..."` before broad source reading. Use the returned source files as the first code map, then expand only through exact searches.
+6. Run `larp semantic-search <project> --query "..."` before doing repeated broad `rg` attempts.
+7. Run `larp tool-guard <project> --task "..."` before long logs, broad searches, or multi-agent work; obey its output limits unless the user explicitly asks for a deeper dump.
+8. Run `larp compress-output <project> --file log.txt` before pasting large command output into chat/memory.
+9. Run `larp token-burn <project> --since today` when the user asks where tokens/context were spent.
+10. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
+11. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
+12. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
+13. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
 
 Default chat behavior after audit:
 
@@ -101,6 +109,8 @@ Larpkeeper говорит: проект можно стартовать прим
 - Do not solve bloat by reading everything.
 - Do not run broad `rg --files`, broad `rg`, long container logs, or more than one subagent until `pack` and `repo-map` have scoped the task.
 - Keep command output near `tool-guard` limits: exact searches first, logs at about 80 lines, and compact summaries instead of raw dumps.
+- Do not scan `~/.codex`, auth backups, `.env`, or secrets with broad search. Token accounting must use allowlisted aggregates only.
+- Compress noisy output before writing chat, repo worklog, Obsidian, or Graphiti.
 - Active docs should answer what to do now.
 - Skills/adapters should route to sources, not duplicate product truth.
 - Archive research; do not delete it.

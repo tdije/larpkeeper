@@ -33,6 +33,14 @@ const SOURCE_SKIP_PREFIXES = [
   '.codex/plugins/',
   '.codex/skills/',
 ];
+const DENY_PATH_PATTERNS = [
+  /(^|\/)\.env(\.|$)/i,
+  /(^|\/)(auth|secret|secrets|credential|credentials|password|token|key)(s)?(\.|-|_|\/|$)/i,
+  /(^|\/)auth\.json(\.bak.*)?$/i,
+  /(^|\/).*\.pem$/i,
+];
+const CODEX_LOG_DB = path.join(os.homedir(), '.codex/logs_2.sqlite');
+const REPO_MAP_CACHE_VERSION = 2;
 const STANDARD = [
   ['docs/CONTEXT_INDEX.md', 'CONTEXT_INDEX.md'],
   ['docs/CURRENT_STATE.md', 'CURRENT_STATE.md'],
@@ -149,8 +157,12 @@ Usage:
   ${bin} audit <project> [--json]        what's real?
   ${bin} pitch <project>                 explain audit value for humans
   ${bin} gather <project> [--query "..."] [--role "..."] [--budget 6000] [--json]   read this
+  ${bin} codex-preflight <project> [--task "..."] [--json]   start a cheap Codex session
   ${bin} repo-map <project> [--task "..."] [--budget 4000] [--json]   compact code map
+  ${bin} semantic-search <project> --query "..." [--json]   semantic-lite code search
   ${bin} tool-guard <project> [--task "..."] [--json]   safe search/log/tool limits
+  ${bin} compress-output <project> [--file PATH] [--json]   summarize noisy tool output
+  ${bin} token-burn <project> [--since today] [--json]   find token/context burn
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
   ${bin} setup <project> [--target agents|claude] [--owner-name NAME] [--apply] [--shell-hook]   one-command install
@@ -844,6 +856,11 @@ function isSourceFile(file) {
   return SOURCE_EXTENSIONS.has(path.extname(file).toLowerCase());
 }
 
+function isDeniedPath(file) {
+  const p = String(file || '').replaceAll(path.sep, '/');
+  return DENY_PATH_PATTERNS.some((pattern) => pattern.test(p));
+}
+
 function sourceFiles(project, cfg) {
   return walk(project, cfg)
     .filter(isSourceFile)
@@ -857,7 +874,8 @@ function sourceFiles(project, cfg) {
         ageDays: Math.max(0, Math.round((Date.now() - stat.mtimeMs) / 86400000)),
       };
     })
-    .filter((f) => !SOURCE_SKIP_PREFIXES.some((prefix) => f.path.startsWith(prefix)));
+    .filter((f) => !SOURCE_SKIP_PREFIXES.some((prefix) => f.path.startsWith(prefix)))
+    .filter((f) => !isDeniedPath(f.path));
 }
 
 function queryTerms(value = '') {
@@ -899,6 +917,39 @@ function extractSymbols(file, text) {
   return symbols;
 }
 
+function extractImports(file, text) {
+  const ext = path.extname(file).toLowerCase();
+  const imports = [];
+  const patterns = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.svelte', '.vue', '.astro'].includes(ext)
+    ? [
+        /\bimport\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"]/g,
+        /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g,
+      ]
+    : ext === '.py'
+      ? [/^\s*(?:from\s+([A-Za-z0-9_.]+)\s+import|import\s+([A-Za-z0-9_.]+))/gm]
+      : [];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) && imports.length < 16) {
+      const value = match[1] || match[2];
+      if (value && !imports.includes(value)) imports.push(value);
+    }
+  }
+  return imports;
+}
+
+function relatedTestFiles(project, sourcePath) {
+  const ext = path.extname(sourcePath);
+  const base = sourcePath.slice(0, -ext.length);
+  const candidates = [
+    `${base}.test${ext}`,
+    `${base}.spec${ext}`,
+    sourcePath.replace(/\/src\//, '/test/').replace(ext, `.test${ext}`),
+    sourcePath.replace(/\/src\//, '/tests/').replace(ext, `.test${ext}`),
+  ];
+  return candidates.filter((f) => fs.existsSync(path.join(project, f))).slice(0, 4);
+}
+
 function scoreSourceForTask(file, symbols, terms) {
   const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
   let score = 0;
@@ -916,21 +967,42 @@ function estimateTextTokens(text) {
   return Math.ceil(String(text || '').length / 4);
 }
 
+function repoMapCacheFile(project) {
+  return path.join(project, '.larpkeeper', 'repo-map-cache.json');
+}
+
+function sourceSignature(files) {
+  return files.map((f) => `${f.path}:${Math.round(f.mtimeMs)}:${f.lines}`).join('|');
+}
+
 function buildRepoMap(project, flags = {}) {
   const cfg = readConfig(project);
   const task = flags.task || flags.query || '';
   const terms = queryTerms(task);
   const budgetTokens = Math.max(800, Number(flags.budget || flags['repo-map-budget'] || flags.repoMapBudget || 4000));
-  const rows = sourceFiles(project, cfg).map((file) => {
+  const files = sourceFiles(project, cfg);
+  const signature = sourceSignature(files);
+  const cacheFile = repoMapCacheFile(project);
+  const cacheKey = JSON.stringify({ v: REPO_MAP_CACHE_VERSION, task, budgetTokens, signature });
+  if (!flags['no-cache'] && fs.existsSync(cacheFile)) {
+    try {
+      const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+      if (cached.cacheKey === cacheKey && cached.map) return { ...cached.map, cache: 'hit' };
+    } catch {}
+  }
+  const rows = files.map((file) => {
     let text = '';
     try { text = fs.readFileSync(file.abs, 'utf8'); } catch {}
     const symbols = extractSymbols(file.path, text);
+    const imports = extractImports(file.path, text);
     const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
     const termMatches = terms.filter((term) => hay.includes(term)).length;
     return {
       path: file.path,
       lines: file.lines,
       symbols: symbols.slice(0, 10),
+      imports: imports.slice(0, 8),
+      relatedTests: relatedTestFiles(project, file.path),
       score: scoreSourceForTask(file, symbols, terms),
       termMatches,
     };
@@ -947,22 +1019,32 @@ function buildRepoMap(project, flags = {}) {
       path: row.path,
       lines: row.lines,
       symbols: row.symbols,
+      imports: row.imports,
+      relatedTests: row.relatedTests,
       reason: row.termMatches > 0 ? 'task/path/symbol match' : 'high-signal source file',
     });
     estimatedTokens += cost;
   }
 
-  return {
+  const map = {
     project,
     task: task || null,
     budgetTokens,
     estimatedTokens,
-    sourceFilesScanned: rows.length,
+    sourceFilesScanned: files.length,
     includedFiles: included,
-    omittedFiles: Math.max(0, rows.length - included.length),
+    omittedFiles: Math.max(0, files.length - included.length),
     command: `${commandName()} repo-map ${quotePath(project)} --task ${JSON.stringify(task || '...')}`,
     readStrategy: 'Read repo-map first, then only listed files plus direct dependencies discovered by exact search.',
+    cache: 'miss',
   };
+  if (!flags['no-cache']) {
+    try {
+      fs.mkdirSync(path.dirname(cacheFile), { recursive: true });
+      fs.writeFileSync(cacheFile, JSON.stringify({ cacheKey, map }, null, 2));
+    } catch {}
+  }
+  return map;
 }
 
 function formatRepoMap(map) {
@@ -987,6 +1069,8 @@ function formatRepoMap(map) {
   for (const f of map.includedFiles) {
     const symbols = f.symbols.length ? f.symbols.join(', ') : 'no exported symbols found';
     lines.push(`- ${f.path} (${f.lines}l) symbols: ${symbols}`);
+    if (f.imports?.length) lines.push(`  imports: ${f.imports.slice(0, 5).join(', ')}`);
+    if (f.relatedTests?.length) lines.push(`  tests: ${f.relatedTests.join(', ')}`);
   }
   return lines.join('\n');
 }
@@ -1055,6 +1139,217 @@ function toolGuard(project, flags = {}) {
   const result = buildToolGuard(project, flags);
   if (flags.json) console.log(JSON.stringify(result, null, 2));
   else console.log(formatToolGuard(result));
+  return result;
+}
+
+function redactSecretLike(text) {
+  return String(text || '')
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, '[REDACTED_KEY]')
+    .replace(/(api[_-]?key|token|password|secret|authorization)\s*[:=]\s*["']?[^"'\s]+/gi, '$1=[REDACTED]');
+}
+
+function summarizeToolOutput(text, flags = {}) {
+  const clean = redactSecretLike(text);
+  const lines = clean.split(/\r?\n/);
+  const maxLines = Number(flags['max-lines'] || flags.maxLines || 80);
+  const errorPatterns = /(error|exception|failed|fatal|traceback|denied|timeout|enoent|eacces|segmentation|panic)/i;
+  const errorLines = [];
+  const matches = new Map();
+  for (const line of lines) {
+    if (errorPatterns.test(line) && errorLines.length < 40) errorLines.push(line.slice(0, 500));
+    const rg = /^([^:\n]{1,160}):(\d+):/.exec(line);
+    if (rg) matches.set(rg[1], (matches.get(rg[1]) || 0) + 1);
+  }
+  const tail = lines.slice(Math.max(0, lines.length - Math.min(maxLines, 30))).map((line) => line.slice(0, 500));
+  const topFiles = [...matches.entries()].sort((a, b) => b[1] - a[1]).slice(0, 15).map(([file, count]) => ({ file, count }));
+  return {
+    inputLines: lines.length,
+    inputBytes: Buffer.byteLength(text || '', 'utf8'),
+    estimatedInputTokens: estimateTextTokens(text || ''),
+    outputLines: Math.min(lines.length, maxLines),
+    errorLines,
+    topFiles,
+    tail,
+    warnings: [
+      ...(lines.length > maxLines ? [`input had ${lines.length} lines; compressed to summary`] : []),
+      ...(clean !== text ? ['secret-like values were redacted'] : []),
+    ],
+  };
+}
+
+function compressOutput(project, flags = {}) {
+  const file = flags.file ? path.resolve(project, flags.file) : null;
+  if (file && isDeniedPath(rel(project, file))) throw new Error('refusing to read secret-like path');
+  const text = file ? fs.readFileSync(file, 'utf8') : fs.readFileSync(0, 'utf8');
+  const result = summarizeToolOutput(text, flags);
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# compressed output\n`);
+    console.log(`input: ${result.inputLines} lines, ~${result.estimatedInputTokens} tokens`);
+    if (result.warnings.length) for (const w of result.warnings) console.log(`warning: ${w}`);
+    if (result.errorLines.length) {
+      console.log(`\nerrors:`);
+      for (const line of result.errorLines.slice(0, 20)) console.log(`- ${line}`);
+    }
+    if (result.topFiles.length) {
+      console.log(`\ntop matched files:`);
+      for (const row of result.topFiles) console.log(`- ${row.file}: ${row.count}`);
+    }
+    console.log(`\ntail:`);
+    for (const line of result.tail) console.log(line);
+  }
+  return result;
+}
+
+function semanticSearch(project, flags = {}) {
+  const query = flags.query || flags.task;
+  if (!query) throw new Error('semantic-search requires --query');
+  const terms = queryTerms(query);
+  const cfg = readConfig(project);
+  const rows = sourceFiles(project, cfg).map((file) => {
+    let text = '';
+    try { text = fs.readFileSync(file.abs, 'utf8'); } catch {}
+    const symbols = extractSymbols(file.path, text);
+    const imports = extractImports(file.path, text);
+    const lower = `${file.path}\n${symbols.join(' ')}\n${imports.join(' ')}\n${text.slice(0, 12000)}`.toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      const count = (lower.match(new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+      score += Math.min(12, count) * 10;
+      if (file.path.toLowerCase().includes(term)) score += 40;
+      if (symbols.some((s) => s.toLowerCase().includes(term))) score += 35;
+    }
+    return {
+      path: file.path,
+      lines: file.lines,
+      score,
+      symbols: symbols.slice(0, 8),
+      imports: imports.slice(0, 6),
+      relatedTests: relatedTestFiles(project, file.path),
+    };
+  }).filter((row) => row.score > 0).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, Number(flags.limit || 20));
+  const result = { project, query, mode: 'semantic-lite', results: rows };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# semantic-lite search\n`);
+    console.log(`query: ${query}`);
+    for (const row of rows) console.log(`- ${row.path} score=${row.score} symbols=${row.symbols.join(', ') || '-'}`);
+  }
+  return result;
+}
+
+function parseSinceSeconds(value) {
+  if (!value || value === 'today') {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return Math.floor(d.getTime() / 1000);
+  }
+  if (value === '24h') return Math.floor(Date.now() / 1000) - 86400;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return Math.floor(new Date(`${value}T00:00:00`).getTime() / 1000);
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function sqliteJson(db, sql) {
+  const out = spawnSync('sqlite3', ['-json', db, sql], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
+  if (out.status !== 0) throw new Error((out.stderr || 'sqlite3 failed').trim());
+  return out.stdout.trim() ? JSON.parse(out.stdout) : [];
+}
+
+function tokenBurn(project, flags = {}) {
+  const db = flags.db || CODEX_LOG_DB;
+  const since = parseSinceSeconds(flags.since || 'today');
+  const exists = fs.existsSync(db);
+  const auditResult = audit(project, { quiet: true });
+  const estimate = computeBudget(project, { ...flags, brief: true });
+  const result = {
+    project,
+    since: flags.since || 'today',
+    source: exists ? db : null,
+    mode: exists ? 'codex-sqlite-estimated-bytes' : 'project-estimate-only',
+    totals: null,
+    topTargets: [],
+    topModules: [],
+    projectEstimate: {
+      broadContextTokens: estimate.beforeTokens,
+      selectedPackTokens: estimate.afterTokens,
+      avoidableTokens: estimate.savedTokens,
+      hotContextLines: auditResult.hotContextLines,
+      broadContextLines: auditResult.broadContextLines,
+      risks: auditResult.risks,
+    },
+    warnings: [
+      'does not read raw prompt/tool bodies',
+      'estimated_bytes is converted with ~4 bytes/token; billing numbers may differ',
+    ],
+  };
+  if (exists) {
+    const where = `ts >= ${Number(since) || 0}`;
+    const totalRows = sqliteJson(db, `select count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where};`)[0] || { rows: 0, bytes: 0 };
+    result.totals = {
+      rows: Number(totalRows.rows || 0),
+      estimatedBytes: Number(totalRows.bytes || 0),
+      estimatedTokens: Math.ceil(Number(totalRows.bytes || 0) / 4),
+    };
+    result.topTargets = sqliteJson(db, `select target, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by target order by bytes desc limit 15;`)
+      .map((r) => ({ target: r.target || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    result.topModules = sqliteJson(db, `select coalesce(module_path,file,'(none)') as source, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by source order by bytes desc limit 15;`)
+      .map((r) => ({ source: r.source || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+  }
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# token burn\n`);
+    console.log(`mode: ${result.mode}`);
+    if (result.totals) console.log(`estimated: ~${result.totals.estimatedTokens} tokens from ${result.totals.rows} safe log rows`);
+    console.log(`project avoidable context: ~${result.projectEstimate.avoidableTokens} tokens`);
+    if (result.topTargets.length) {
+      console.log(`\ntop log targets:`);
+      for (const row of result.topTargets.slice(0, 8)) console.log(`- ${row.target}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
+    }
+    if (result.topModules.length) {
+      console.log(`\ntop modules/files:`);
+      for (const row of result.topModules.slice(0, 8)) console.log(`- ${row.source}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
+    }
+  }
+  return result;
+}
+
+function codexPreflight(project, flags = {}) {
+  const task = flags.task || flags.query || '...';
+  const packResult = buildGather(project, { ...flags, task, query: task });
+  const repo = buildRepoMap(project, { ...flags, task, budget: flags['repo-map-budget'] || 1800 });
+  const guard = buildToolGuard(project, flags);
+  const budgetResult = computeBudget(project, { ...flags, task, query: task });
+  const result = {
+    project,
+    task,
+    readFirst: packResult.recommendedContextPack,
+    repoMapCommand: repo.command,
+    repoMapTopFiles: repo.includedFiles.slice(0, 8),
+    guard,
+    budget: {
+      beforeTokens: budgetResult.beforeTokens,
+      afterTokens: budgetResult.afterTokens,
+      savedTokens: budgetResult.savedTokens,
+      savedPct: budgetResult.savedPct,
+    },
+    next: [
+      `Read only: ${packResult.recommendedContextPack.join(', ') || 'no default docs'}`,
+      `Open repo-map top files first`,
+      `Use max_output_tokens <= ${guard.maxOutputTokens}; logs --tail ${guard.logTailLines}`,
+    ],
+  };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# Codex preflight\n`);
+    console.log(`task: ${task}`);
+    console.log(`budget: ~${result.budget.beforeTokens} -> ~${result.budget.afterTokens} tokens, saved ~${result.budget.savedTokens} (${result.budget.savedPct}%)`);
+    console.log(`\nread first:`);
+    for (const f of result.readFirst) console.log(`- ${f}`);
+    console.log(`\nsource map:`);
+    for (const f of result.repoMapTopFiles) console.log(`- ${f.path} (${f.lines}l)`);
+    console.log(`\nguard: max_output_tokens=${guard.maxOutputTokens}, logs tail=${guard.logTailLines}`);
+  }
   return result;
 }
 
@@ -1455,15 +1750,20 @@ function managedAdapterBlock(target, docRel, ownerName) {
     '',
     '```bash',
     'larp audit .',
+    'larp codex-preflight . --task "..."',
     'larp recommend .',
     'larp pack . --task "..."',
     'larp repo-map . --task "..."',
     'larp tool-guard . --task "..."',
+    'larp semantic-search . --query "..."',
+    'larp compress-output . --file log.txt',
+    'larp token-burn . --since today',
     '```',
     '',
     'After `audit`, tell the human: health, cleanup potential, missing files, and next safe command.',
     'Before `rg --files`, broad `rg`, Docker/container logs over 80 lines, or more than one subagent: run `pack` + `repo-map`, then read only the returned docs/source files and exact-search dependencies.',
     'Keep shell outputs compact: prefer exact searches, `--tail 80` for logs, and `max_output_tokens` near the `tool-guard` recommendation. Summarize outputs instead of pasting raw logs.',
+    'For token accounting, use allowlisted aggregates only. Do not scan `~/.codex`, auth backups, `.env`, or secret files with broad search.',
     'After meaningful completed work, offer or write a compact worklog-style completion: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step.',
     'Destination policy: repo md gets operational detail; Obsidian gets durable human memory/preferences/cross-project summaries; Graphiti gets compact sourced facts only; chat/DM gets concise rich Markdown for the owner.',
     'Use `--apply` only when the human wants context files changed.',
@@ -2275,8 +2575,12 @@ async function main() {
   else if (cmd === 'audit') audit(project, flags);
   else if (cmd === 'pitch') pitch(project, flags);
   else if (cmd === 'gather') gather(project, flags);
+  else if (cmd === 'codex-preflight' || cmd === 'preflight') codexPreflight(project, flags);
   else if (cmd === 'repo-map' || cmd === 'map') repoMap(project, flags);
+  else if (cmd === 'semantic-search' || cmd === 'search') semanticSearch(project, flags);
   else if (cmd === 'tool-guard' || cmd === 'guard') toolGuard(project, flags);
+  else if (cmd === 'compress-output' || cmd === 'compress') compressOutput(project, flags);
+  else if (cmd === 'token-burn' || cmd === 'tokens') tokenBurn(project, flags);
   else if (cmd === 'caveman') caveman(project, flags);
   else if (cmd === 'init') init(project, flags);
   else if (cmd === 'setup') setup(project, flags);

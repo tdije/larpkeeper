@@ -44,7 +44,11 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `score`: rank files by role, authority, risk, read cost, and recommendation.
 - `gather`: build a task-specific context pack.
 - `repo-map`: build a compact source-code map for the task before opening many files.
+- `codex-preflight`: one-shot Codex session starter with pack, repo-map, tool guard, and budget.
+- `semantic-search`: semantic-lite local code search by query, symbols, imports, and path.
 - `tool-guard`: emit safe limits for searches, logs, tool output, and subagent fan-out.
+- `compress-output`: summarize/redact noisy command output before it enters chat memory.
+- `token-burn`: show safe aggregate context/token burn from allowlisted local sources.
 - `init`: create missing standard files.
 - `setup`: one-command bootstrap + adapter install, optionally shell prompt hook.
 - `bootstrap`: create the project context skeleton.
@@ -110,6 +114,24 @@ larp tool-guard . --task "..."
 
 Then they should read only the returned docs/source files, expand through exact searches, and keep command output near the guard limits.
 
+For Codex sessions, prefer:
+
+```bash
+larp codex-preflight . --task "..."
+```
+
+For noisy command output, pipe or save output through:
+
+```bash
+larp compress-output . --file log.txt
+```
+
+For burn analysis:
+
+```bash
+larp token-burn . --since today
+```
+
 ## Ten Health Goals
 
 1. Agents should not read everything by default.
@@ -125,3 +147,5 @@ Then they should read only the returned docs/source files, expand through exact 
 11. Meaningful completed work should leave a simple structured completion: what was done, what became better, evidence/tests, deploy status, and next step.
 12. Agents should address the owner by the configured name in every user-facing prompt/update/report/final answer.
 13. Agents should use `repo-map` and `tool-guard` before wide code/log exploration.
+14. Agents should compress noisy tool output before putting it into chat, worklog, Obsidian, or Graphiti.
+15. Token accounting should use safe aggregates and deny raw secrets/auth/prompt bodies by default.
