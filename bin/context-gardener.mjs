@@ -162,6 +162,7 @@ Usage:
   ${bin} semantic-search <project> --query "..." [--json]   semantic-lite code search
   ${bin} tool-guard <project> [--task "..."] [--json]   safe search/log/tool limits
   ${bin} compress-output <project> [--file PATH] [--json]   summarize noisy tool output
+  ${bin} run <project> -- <command...>   run command and compress output
   ${bin} token-burn <project> [--since today] [--json]   find token/context burn
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
@@ -1199,6 +1200,69 @@ function compressOutput(project, flags = {}) {
     for (const line of result.tail) console.log(line);
   }
   return result;
+}
+
+function runWrapped(project, flags = {}) {
+  const sep = process.argv.indexOf('--');
+  if (sep === -1 || sep === process.argv.length - 1) throw new Error('run requires command after --');
+  const args = process.argv.slice(sep + 1);
+  const startedAt = new Date();
+  const result = spawnSync(args[0], args.slice(1), {
+    cwd: project,
+    encoding: 'utf8',
+    shell: false,
+    maxBuffer: Number(flags['max-buffer'] || flags.maxBuffer || 20 * 1024 * 1024),
+  });
+  const stdout = result.stdout || '';
+  const stderr = result.stderr || '';
+  const combined = [
+    stdout ? `# stdout\n${stdout}` : '',
+    stderr ? `# stderr\n${stderr}` : '',
+  ].filter(Boolean).join('\n\n');
+  const runsDir = path.join(project, '.larpkeeper', 'runs');
+  fs.mkdirSync(runsDir, { recursive: true });
+  const stamp = startedAt.toISOString().replace(/[:.]/g, '-');
+  const base = path.join(runsDir, `run-${stamp}`);
+  const stdoutFile = `${base}.stdout.log`;
+  const stderrFile = `${base}.stderr.log`;
+  const metaFile = `${base}.json`;
+  fs.writeFileSync(stdoutFile, stdout);
+  fs.writeFileSync(stderrFile, stderr);
+  const summary = summarizeToolOutput(combined, flags);
+  const meta = {
+    project,
+    command: args,
+    status: result.status ?? null,
+    signal: result.signal || null,
+    startedAt: startedAt.toISOString(),
+    finishedAt: new Date().toISOString(),
+    stdoutFile: rel(project, stdoutFile),
+    stderrFile: rel(project, stderrFile),
+    summary,
+  };
+  fs.writeFileSync(metaFile, JSON.stringify(meta, null, 2));
+  if (flags.json) console.log(JSON.stringify(meta, null, 2));
+  else {
+    console.log(`# larp run\n`);
+    console.log(`command: ${args.join(' ')}`);
+    console.log(`status: ${meta.status}${meta.signal ? ` signal=${meta.signal}` : ''}`);
+    console.log(`raw stdout: ${meta.stdoutFile}`);
+    console.log(`raw stderr: ${meta.stderrFile}`);
+    console.log(`input: ${summary.inputLines} lines, ~${summary.estimatedInputTokens} tokens`);
+    for (const warning of summary.warnings) console.log(`warning: ${warning}`);
+    if (summary.errorLines.length) {
+      console.log(`\nerrors:`);
+      for (const line of summary.errorLines.slice(0, 20)) console.log(`- ${line}`);
+    }
+    if (summary.topFiles.length) {
+      console.log(`\ntop matched files:`);
+      for (const row of summary.topFiles.slice(0, 10)) console.log(`- ${row.file}: ${row.count}`);
+    }
+    console.log(`\ntail:`);
+    for (const line of summary.tail) console.log(line);
+  }
+  process.exitCode = result.status ?? (result.signal ? 1 : 0);
+  return meta;
 }
 
 function semanticSearch(project, flags = {}) {
@@ -2580,6 +2644,7 @@ async function main() {
   else if (cmd === 'semantic-search' || cmd === 'search') semanticSearch(project, flags);
   else if (cmd === 'tool-guard' || cmd === 'guard') toolGuard(project, flags);
   else if (cmd === 'compress-output' || cmd === 'compress') compressOutput(project, flags);
+  else if (cmd === 'run') runWrapped(project, flags);
   else if (cmd === 'token-burn' || cmd === 'tokens') tokenBurn(project, flags);
   else if (cmd === 'caveman') caveman(project, flags);
   else if (cmd === 'init') init(project, flags);

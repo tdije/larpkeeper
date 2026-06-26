@@ -277,6 +277,20 @@ test('compress-output redacts secrets and summarizes noisy logs', () => {
   assert.doesNotMatch(JSON.stringify(out), /sk-secretvalue/);
 });
 
+test('run wrapper stores raw output and returns compressed summary', () => {
+  const project = tmpProject('RunWrap');
+  fs.mkdirSync(project, { recursive: true });
+
+  const out = JSON.parse(run(['run', project, '--json', '--', process.execPath, '-e', 'console.log("src/app.ts:10: ok"); console.error("Error: wrapped boom")']));
+
+  assert.equal(out.status, 0);
+  assert.ok(out.stdoutFile.endsWith('.stdout.log'));
+  assert.ok(out.stderrFile.endsWith('.stderr.log'));
+  assert.ok(fs.existsSync(path.join(project, out.stdoutFile)));
+  assert.ok(out.summary.errorLines.some((line) => line.includes('wrapped boom')));
+  assert.ok(out.summary.topFiles.some((row) => row.file === 'src/app.ts'));
+});
+
 test('token-burn reads only safe sqlite aggregates', () => {
   const project = tmpProject('TokenBurn');
   fs.mkdirSync(project, { recursive: true });

@@ -17,6 +17,7 @@ larp repo-map /path/to/project --task "..."
 larp tool-guard /path/to/project --task "..."
 larp semantic-search /path/to/project --query "..."
 larp compress-output /path/to/project --file log.txt
+larp run /path/to/project -- npm test
 larp token-burn /path/to/project --since today
 larp recommend /path/to/project
 larp maintain /path/to/project --apply
@@ -57,11 +58,12 @@ When Larpkeeper is relevant, use it as the context gate before broad reading:
 6. Run `larp semantic-search <project> --query "..."` before doing repeated broad `rg` attempts.
 7. Run `larp tool-guard <project> --task "..."` before long logs, broad searches, or multi-agent work; obey its output limits unless the user explicitly asks for a deeper dump.
 8. Run `larp compress-output <project> --file log.txt` before pasting large command output into chat/memory.
-9. Run `larp token-burn <project> --since today` when the user asks where tokens/context were spent.
-10. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
-11. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
-12. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
-13. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
+9. Prefer `larp run <project> -- <command>` for commands that may produce long output; it stores raw logs and prints a compressed summary.
+10. Run `larp token-burn <project> --since today` when the user asks where tokens/context were spent.
+11. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
+12. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
+13. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
+14. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
 
 Default chat behavior after audit:
 

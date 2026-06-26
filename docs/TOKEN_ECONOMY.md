@@ -36,6 +36,8 @@ The token estimate is intentionally rough. It is for prioritization, not billing
 
 `compress-output` turns noisy command output into a safe summary: error lines, top matched files, tail, line/token estimate, and redaction warnings.
 
+`run` executes a command, stores raw stdout/stderr under `.larpkeeper/runs/`, and prints only a compressed summary to the chat/terminal.
+
 `token-burn` reads only allowlisted aggregate fields from Codex sqlite logs. It must not print raw prompt, tool body, auth, token, or secret content.
 
 `semantic-search` is semantic-lite for now: local lexical/symbol/import scoring without remote embeddings. It is meant to replace repeated broad `rg` attempts until a real vector/symbol index is installed.

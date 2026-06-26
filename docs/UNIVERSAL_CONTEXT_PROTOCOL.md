@@ -48,6 +48,7 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `semantic-search`: semantic-lite local code search by query, symbols, imports, and path.
 - `tool-guard`: emit safe limits for searches, logs, tool output, and subagent fan-out.
 - `compress-output`: summarize/redact noisy command output before it enters chat memory.
+- `run`: execute a command while storing raw stdout/stderr and printing a compressed summary.
 - `token-burn`: show safe aggregate context/token burn from allowlisted local sources.
 - `init`: create missing standard files.
 - `setup`: one-command bootstrap + adapter install, optionally shell prompt hook.
@@ -124,6 +125,12 @@ For noisy command output, pipe or save output through:
 
 ```bash
 larp compress-output . --file log.txt
+```
+
+To run noisy commands through the compressor:
+
+```bash
+larp run . -- npm test
 ```
 
 For burn analysis:
