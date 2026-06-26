@@ -349,6 +349,27 @@ test('token-burn human output can use Russian payoff language', () => {
   assert.doesNotMatch(out, /SECRET_BODY/);
 });
 
+test('spend-guard gives cost actions without raw log content', () => {
+  const project = tmpProject('SpendGuard');
+  fs.mkdirSync(project, { recursive: true });
+  const db = path.join(project, 'codex.sqlite');
+  execFileSync('sqlite3', [db, 'create table logs(id integer primary key, ts integer not null, ts_nanos integer not null, level text not null, target text not null, feedback_log_body text, module_path text, file text, line integer, thread_id text, process_uuid text, estimated_bytes integer not null default 0);']);
+  execFileSync('sqlite3', [db, "insert into logs(ts,ts_nanos,level,target,feedback_log_body,module_path,file,estimated_bytes) values (2000000000,0,'INFO','codex_client::transport','SECRET_BODY','transport','src/app.ts',8000000);"]);
+
+  const json = JSON.parse(run(['spend-guard', project, '--since', '1', '--db', db, '--json']));
+  assert.equal(json.pressure, 'high');
+  assert.equal(json.maxParallelAgents, 1);
+  assert.equal(json.expensiveLanesAllowed, 'explicit-approval-only');
+  assert.ok(json.blockedByDefault.some((item) => item.includes('gpt-5.5')));
+  assert.doesNotMatch(JSON.stringify(json), /SECRET_BODY/);
+
+  const human = run(['spend-guard', project, '--since', '1', '--db', db, '--lang', 'ru']);
+  assert.match(human, /Локальная оценка burn/);
+  assert.match(human, /параллельных агентов максимум: 1/);
+  assert.match(human, /Запрещено по умолчанию/);
+  assert.doesNotMatch(human, /SECRET_BODY/);
+});
+
 test('compact-chat writes a real smart handoff from project memory', () => {
   const project = tmpProject('Metis');
   write(path.join(project, 'README.md'), 3);

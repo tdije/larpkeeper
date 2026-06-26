@@ -19,6 +19,7 @@ larp semantic-search /path/to/project --query "..."
 larp compress-output /path/to/project --file log.txt
 larp run /path/to/project -- npm test
 larp token-burn /path/to/project --since today
+larp spend-guard /path/to/project --since today
 larp recommend /path/to/project
 larp maintain /path/to/project --apply
 larp budget /path/to/project --brief
@@ -37,6 +38,14 @@ Language policy:
 - In Russian chats, pass `--lang ru` to human-facing Larpkeeper commands when practical (`audit`, `recommend`, `budget`, `token-burn`, `doctor`, `watch`) and summarize results in Russian.
 - In English chats, pass `--lang en` or omit it when the surrounding task is English.
 - Human reports should include payoff numbers when available: what was saved, what improved, percent/line/token reduction, and the next highest-leverage cleanup.
+
+Cost pressure policy:
+
+- If the user mentions tokens, spend, cost, burn, a high model bill, or expensive parallel agents, switch to cost-guard mode before doing more exploration.
+- Run `larp token-burn <project> --since today --lang ru` for Russian chats, then `larp tool-guard <project> --task "..."`; report local estimates separately from real provider billing.
+- Do not spawn more than one subagent, run broad search, read long logs, or use xhigh/opus-class model lanes until the burn source is scoped and the user approves the higher-cost path.
+- Prefer `codex-preflight`, `pack`, `repo-map`, exact searches, and `larp run` summaries. Avoid raw terminal dumps.
+- Explain savings in human terms: what used to be loaded, what is loaded now, what was skipped/compressed, and why that reduces future spend.
 
 During setup, prefer passing `--owner-name "..."`. Explain that the name is stored in the managed adapter so agents address the human consistently in every prompt/update/report/final answer; if context drifts or the agent starts acting confused, the missing or wrong address is visible immediately.
 
@@ -69,6 +78,7 @@ When Larpkeeper is relevant, use it as the context gate before broad reading:
 8. Run `larp compress-output <project> --file log.txt` before pasting large command output into chat/memory.
 9. Prefer `larp run <project> -- <command>` for commands that may produce long output; it stores raw logs and prints a compressed summary.
 10. Run `larp token-burn <project> --since today` when the user asks where tokens/context were spent.
+10a. Run `larp spend-guard <project> --since today` when spend is high; apply cost-guard mode: stop fan-out, avoid expensive models unless explicitly approved, and use scoped packs before reading more.
 11. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
 12. Run `larp workflow-status <project>` when the user asks whether the durable audit -> pack -> work -> finish -> compile loop is in place.
 13. Run `larp automation-plan <project>` before installing scheduled/pressure maintenance; keep it guarded and never auto-delete/prune.

@@ -11,6 +11,7 @@ It keeps project memory small, current, and readable: what matters now, what can
 - maps source code with task ranking, symbols, imports, related tests, and lightweight dependency signals;
 - tracks a durable workflow shape: audit -> pack -> repo-map -> guard -> work -> finish -> verify -> compile;
 - describes safe automation plans for scheduled audits, pressure checks, digest, and compacting;
+- turns high token spend into a spend-guard plan with max agents, blocked expensive lanes, and next scoped commands;
 - scaffolds, audits, and journals the context files agents should use;
 - adds thin adapters for AGENTS, Claude, and Codex-style runtimes;
 - warns when context is bloated or stale.
@@ -38,6 +39,7 @@ larp audit /path/to/project
 larp recommend /path/to/project
 larp pack /path/to/project --task "fix webapp"
 larp repo-map /path/to/project --task "fix webapp"
+larp spend-guard /path/to/project --since today
 larp compile-memory /path/to/project --apply
 larp workflow-status /path/to/project
 larp automation-plan /path/to/project
@@ -98,6 +100,8 @@ larp prune /path/to/project
 larp doctor /path/to/project
 larp pressure /path/to/project --brief
 larp repo-map /path/to/project --task "..."
+larp token-burn /path/to/project --since today
+larp spend-guard /path/to/project --since today
 larp compile-memory /path/to/project --apply
 larp workflow-status /path/to/project
 larp automation-plan /path/to/project
@@ -169,6 +173,16 @@ larp automation-plan .
 ```
 
 The plan separates read-only maintenance from guarded write steps. It should never auto-delete or auto-prune without explicit human approval.
+
+### `spend-guard`
+
+Turns token pressure into an operating mode:
+
+```bash
+larp spend-guard . --since today --lang ru
+```
+
+It reuses safe `token-burn` aggregates without printing raw prompt/log bodies, then reports local burn estimate, avoidable startup context, max parallel agents, whether expensive model lanes need explicit approval, what is blocked by default, and the next scoped commands.
 
 When a project has a task completion hook such as `scripts/task-done.sh`, use it after meaningful completed work to keep repo worklog, Obsidian, and Graphiti aligned. Write simple structured entries: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step. For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise.
 

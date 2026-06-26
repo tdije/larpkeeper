@@ -183,6 +183,7 @@ Usage:
   ${bin} compress-output <project> [--file PATH] [--json]   summarize noisy tool output
   ${bin} run <project> -- <command...>   run command and compress output
   ${bin} token-burn <project> [--since today] [--json]   find token/context burn
+  ${bin} spend-guard <project> [--since today] [--json]   cost-pressure action plan
   ${bin} caveman <project> [--query "..."] [--apply]   tiny brain mode
   ${bin} init <project> [--apply]        set the bones
   ${bin} setup <project> [--target agents|claude] [--owner-name NAME] [--apply] [--shell-hook]   one-command install
@@ -1661,6 +1662,7 @@ function tokenBurn(project, flags = {}) {
     }
   }
   result.recommendations = tokenBurnRecommendations(result);
+  if (flags.returnResult) return result;
   if (flags.json) console.log(JSON.stringify(result, null, 2));
   else {
     const lang = result.lang || 'en';
@@ -1745,6 +1747,101 @@ function tokenBurn(project, flags = {}) {
     if (result.warnings.length) {
       section(tr(lang, 'Limits', 'Ограничения'));
       for (const item of result.warnings.slice(0, 4)) console.log(`- ${item}`);
+    }
+  }
+  return result;
+}
+
+function spendGuard(project, flags = {}) {
+  const burn = tokenBurn(project, { ...flags, returnResult: true });
+  const lang = textLang(flags);
+  const totalTokens = burn.totals?.estimatedTokens || 0;
+  const avoidableTokens = burn.projectEstimate?.avoidableTokens || 0;
+  const hotContextLines = burn.projectEstimate?.hotContextLines || 0;
+  const topTarget = burn.topTargets[0];
+  const pressure =
+    totalTokens > 10000000 || avoidableTokens > 200000 || hotContextLines > 8000
+      ? 'critical'
+      : totalTokens > 1000000 || avoidableTokens > 50000 || hotContextLines > 2000
+        ? 'high'
+        : totalTokens > 100000 || avoidableTokens > 10000
+          ? 'watch'
+          : 'ok';
+  const maxParallelAgents = pressure === 'critical' || pressure === 'high' ? 1 : pressure === 'watch' ? 2 : 3;
+  const expensiveLanesAllowed = pressure === 'critical' || pressure === 'high' ? 'explicit-approval-only' : 'scoped-only';
+  const result = {
+    project,
+    lang,
+    since: burn.since,
+    pressure,
+    maxParallelAgents,
+    expensiveLanesAllowed,
+    localEstimate: {
+      tokens: totalTokens,
+      avoidableProjectTokens: avoidableTokens,
+      hotContextLines,
+      topTarget: topTarget ? { name: topTarget.target, estimatedTokens: topTarget.estimatedTokens } : null,
+    },
+    immediateActions: [
+      'Run codex-preflight before reading more files.',
+      'Use pack and repo-map; read only ranked files.',
+      'Use exact search, not broad rg/rg --files.',
+      'Wrap noisy tests/logs with larp run or compress-output.',
+      'Do not spawn multiple expensive agents until scope is smaller.',
+    ],
+    blockedByDefault: [
+      'raw long logs in chat or memory',
+      'broad home-directory scans',
+      '3+ parallel agents',
+      'xhigh/opus/gpt-5.5 lanes without explicit owner approval',
+      'archive/heavy docs as startup context',
+    ],
+    nextCommands: [
+      `larp codex-preflight ${quotePath(project)} --task "..." --lang ${lang}`,
+      `larp tool-guard ${quotePath(project)} --task "..." --lang ${lang}`,
+      `larp repo-map ${quotePath(project)} --task "..."`,
+    ],
+    limits: burn.warnings,
+  };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`${bold('Larpkeeper spend guard')} ${dim(`(${path.basename(project)})`)}`);
+    console.log(`${tr(lang, 'pressure', 'давление')}: ${pressure === 'critical' ? red('critical') : pressure === 'high' ? red(tr(lang, 'high', 'высокое')) : pressure === 'watch' ? yellow(tr(lang, 'watch', 'следить')) : green('ok')}`);
+    console.log('');
+    if (lang === 'ru') {
+      console.log(`Локальная оценка burn: ~${fmtNumber(totalTokens)} токенов; это не биллинг провайдера.`);
+      console.log(`Можно не тянуть на старте: ~${fmtNumber(avoidableTokens)} project-context токенов; hot context ${fmtNumber(hotContextLines)} строк.`);
+      if (topTarget) console.log(`Самый жирный bucket: ${topTarget.target} — ~${fmtNumber(topTarget.estimatedTokens)} токенов.`);
+      section('Режим работы');
+      console.log(`- параллельных агентов максимум: ${maxParallelAgents}`);
+      console.log(`- дорогие lanes: ${expensiveLanesAllowed === 'explicit-approval-only' ? 'только после явного разрешения владельца' : 'только после scoped pack/repo-map'}`);
+      section('Сразу делаем');
+      for (const item of result.immediateActions) {
+        const ru = item
+          .replace('Run codex-preflight before reading more files.', 'перед новым чтением файлов запускаем codex-preflight')
+          .replace('Use pack and repo-map; read only ranked files.', 'используем pack и repo-map; читаем только ранжированные файлы')
+          .replace('Use exact search, not broad rg/rg --files.', 'делаем точечный поиск, не широкий rg/rg --files')
+          .replace('Wrap noisy tests/logs with larp run or compress-output.', 'шумные тесты/логи запускаем через larp run или compress-output')
+          .replace('Do not spawn multiple expensive agents until scope is smaller.', 'не запускаем несколько дорогих агентов, пока scope не сжат');
+        console.log(`- ${ru}`);
+      }
+      section('Запрещено по умолчанию');
+      for (const item of result.blockedByDefault) console.log(`- ${item}`);
+      section('Следующие команды');
+      for (const cmd of result.nextCommands) console.log(`- ${cmd}`);
+    } else {
+      console.log(`Local burn estimate: ~${fmtNumber(totalTokens)} tokens; this is not provider billing.`);
+      console.log(`Avoidable startup context: ~${fmtNumber(avoidableTokens)} project-context tokens; hot context ${fmtNumber(hotContextLines)} lines.`);
+      if (topTarget) console.log(`Largest bucket: ${topTarget.target} at ~${fmtNumber(topTarget.estimatedTokens)} tokens.`);
+      section('Work Mode');
+      console.log(`- max parallel agents: ${maxParallelAgents}`);
+      console.log(`- expensive lanes: ${expensiveLanesAllowed}`);
+      section('Immediate Actions');
+      for (const item of result.immediateActions) console.log(`- ${item}`);
+      section('Blocked By Default');
+      for (const item of result.blockedByDefault) console.log(`- ${item}`);
+      section('Next Commands');
+      for (const cmd of result.nextCommands) console.log(`- ${cmd}`);
     }
   }
   return result;
@@ -3463,6 +3560,7 @@ async function main() {
   else if (cmd === 'compress-output' || cmd === 'compress') compressOutput(project, flags);
   else if (cmd === 'run') runWrapped(project, flags);
   else if (cmd === 'token-burn' || cmd === 'tokens') tokenBurn(project, flags);
+  else if (cmd === 'spend-guard' || cmd === 'cost-guard') spendGuard(project, flags);
   else if (cmd === 'caveman') caveman(project, flags);
   else if (cmd === 'init') init(project, flags);
   else if (cmd === 'setup') setup(project, flags);
