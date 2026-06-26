@@ -302,6 +302,10 @@ test('token-burn reads only safe sqlite aggregates', () => {
 
   assert.equal(out.totals.estimatedTokens, 1000);
   assert.equal(out.topTargets[0].target, 'tool');
+  assert.equal(out.topProcesses[0].process, '(none)');
+  assert.equal(out.topThreads[0].thread, '(none)');
+  assert.equal(out.dailyBuckets[0].estimatedTokens, 1000);
+  assert.ok(out.recommendations.some((item) => item.includes('Tool output')));
   assert.doesNotMatch(JSON.stringify(out), /SECRET_BODY/);
 });
 

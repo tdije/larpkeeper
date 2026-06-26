@@ -1320,6 +1320,29 @@ function sqliteJson(db, sql) {
   return out.stdout.trim() ? JSON.parse(out.stdout) : [];
 }
 
+function tokenBurnRecommendations(result) {
+  const recs = [];
+  const targetNames = result.topTargets.map((row) => row.target).join(' ').toLowerCase();
+  const moduleNames = result.topModules.map((row) => row.source).join(' ').toLowerCase();
+  if (/transport|sse|responses|outgoing_message/.test(targetNames)) {
+    recs.push('Transport/model stream dominates: reduce long turns, compact earlier, and avoid repeating full context in follow-ups.');
+  }
+  if (/markdown_stream|chatwidget/.test(targetNames)) {
+    recs.push('TUI/chat rendering is noisy: keep assistant/tool summaries shorter and avoid pasting long raw output.');
+  }
+  if (/mcp|connection_manager/.test(targetNames)) {
+    recs.push('MCP traffic is visible: prefer fewer large MCP calls and summarize MCP results before continuing.');
+  }
+  if (/tool|exec|shell|process/.test(`${targetNames} ${moduleNames}`)) {
+    recs.push('Tool output is visible: use `larp run` or `larp compress-output` for tests, logs, grep, and build output.');
+  }
+  if (result.projectEstimate.avoidableTokens > 10000) {
+    recs.push('Project context has avoidable tokens: start sessions with `larp codex-preflight . --task "..."`.');
+  }
+  if (!recs.length) recs.push('No single burn source dominates; keep using preflight, repo-map, and compressed command output.');
+  return recs;
+}
+
 function tokenBurn(project, flags = {}) {
   const db = flags.db || CODEX_LOG_DB;
   const since = parseSinceSeconds(flags.since || 'today');
@@ -1334,6 +1357,10 @@ function tokenBurn(project, flags = {}) {
     totals: null,
     topTargets: [],
     topModules: [],
+    topProcesses: [],
+    topThreads: [],
+    dailyBuckets: [],
+    recommendations: [],
     projectEstimate: {
       broadContextTokens: estimate.beforeTokens,
       selectedPackTokens: estimate.afterTokens,
@@ -1359,7 +1386,14 @@ function tokenBurn(project, flags = {}) {
       .map((r) => ({ target: r.target || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
     result.topModules = sqliteJson(db, `select coalesce(module_path,file,'(none)') as source, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by source order by bytes desc limit 15;`)
       .map((r) => ({ source: r.source || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    result.topProcesses = sqliteJson(db, `select coalesce(process_uuid,'(none)') as process, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by process order by bytes desc limit 10;`)
+      .map((r) => ({ process: r.process || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    result.topThreads = sqliteJson(db, `select coalesce(thread_id,'(none)') as thread, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by thread order by bytes desc limit 10;`)
+      .map((r) => ({ thread: r.thread || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    result.dailyBuckets = sqliteJson(db, `select date(ts, 'unixepoch') as day, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by day order by day desc limit 14;`)
+      .map((r) => ({ day: r.day, rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
   }
+  result.recommendations = tokenBurnRecommendations(result);
   if (flags.json) console.log(JSON.stringify(result, null, 2));
   else {
     console.log(`# token burn\n`);
@@ -1373,6 +1407,14 @@ function tokenBurn(project, flags = {}) {
     if (result.topModules.length) {
       console.log(`\ntop modules/files:`);
       for (const row of result.topModules.slice(0, 8)) console.log(`- ${row.source}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
+    }
+    if (result.dailyBuckets.length) {
+      console.log(`\ndaily:`);
+      for (const row of result.dailyBuckets.slice(0, 7)) console.log(`- ${row.day}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
+    }
+    if (result.recommendations.length) {
+      console.log(`\nwhat to cut first:`);
+      for (const item of result.recommendations) console.log(`- ${item}`);
     }
   }
   return result;
