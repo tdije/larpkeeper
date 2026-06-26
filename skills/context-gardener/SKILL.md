@@ -23,11 +23,20 @@ larp recommend /path/to/project
 larp maintain /path/to/project --apply
 larp budget /path/to/project --brief
 larp watch /path/to/project
+larp compile-memory /path/to/project --apply
+larp workflow-status /path/to/project
+larp automation-plan /path/to/project
 ```
 
 If the binary is not installed, run `node "$LARPK_HOME/bin/context-gardener.mjs" ...` with `LARPK_HOME` pointing at this repo.
 
 Use `--apply` only when the user wants files created or changed.
+
+Language policy:
+
+- In Russian chats, pass `--lang ru` to human-facing Larpkeeper commands when practical (`audit`, `recommend`, `budget`, `token-burn`, `doctor`, `watch`) and summarize results in Russian.
+- In English chats, pass `--lang en` or omit it when the surrounding task is English.
+- Human reports should include payoff numbers when available: what was saved, what improved, percent/line/token reduction, and the next highest-leverage cleanup.
 
 During setup, prefer passing `--owner-name "..."`. Explain that the name is stored in the managed adapter so agents address the human consistently in every prompt/update/report/final answer; if context drifts or the agent starts acting confused, the missing or wrong address is visible immediately.
 
@@ -61,9 +70,12 @@ When Larpkeeper is relevant, use it as the context gate before broad reading:
 9. Prefer `larp run <project> -- <command>` for commands that may produce long output; it stores raw logs and prints a compressed summary.
 10. Run `larp token-burn <project> --since today` when the user asks where tokens/context were spent.
 11. Run `larp budget <project> --query "..." --brief` when the user asks what is being saved.
-12. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
-13. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
-14. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
+12. Run `larp workflow-status <project>` when the user asks whether the durable audit -> pack -> work -> finish -> compile loop is in place.
+13. Run `larp automation-plan <project>` before installing scheduled/pressure maintenance; keep it guarded and never auto-delete/prune.
+14. Run `larp compile-memory <project> --apply` when the user wants raw worklogs/journals compiled into a short current-truth layer. Use `--apply` only when writes were requested.
+15. Run `larp maintain <project> --apply`, `larp bootstrap <project> --apply`, or `larp compact-handoff <project> --apply` only when the user explicitly wants context files changed.
+16. Run `larp finish <project> --done "..." --next "..." --evidence "..." --apply` at the end of meaningful context-maintenance work.
+17. If `scripts/task-done.sh` exists, suggest or run it after completed project work so the repo worklog, Obsidian, and Graphiti receive the same durable completion entry.
 
 Default chat behavior after audit:
 

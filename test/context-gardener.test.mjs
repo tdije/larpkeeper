@@ -214,13 +214,16 @@ test('repo-map returns compact task-focused source symbols', () => {
     'export function stretchVertical() { return "ok"; }',
     'export class MediaPlanner {}',
   ].join('\n'));
+  fs.writeFileSync(path.join(project, 'src/editor.test.ts'), 'import { stretchVertical } from "./editor";\n');
   fs.writeFileSync(path.join(project, 'src/other.ts'), 'export function unrelatedThing() { return false; }\n');
 
   const out = JSON.parse(run(['repo-map', project, '--task', 'stretch vertical', '--json']));
 
-  assert.equal(out.sourceFilesScanned, 2);
+  assert.equal(out.sourceFilesScanned, 3);
   assert.equal(out.includedFiles[0].path, 'src/editor.ts');
   assert.ok(out.includedFiles[0].symbols.includes('stretchVertical'));
+  assert.ok(out.includedFiles[0].relatedTests.includes('src/editor.test.ts'));
+  assert.equal(out.includedFiles[0].signals.small, true);
   assert.ok(out.estimatedTokens <= out.budgetTokens);
 });
 
@@ -309,6 +312,97 @@ test('token-burn reads only safe sqlite aggregates', () => {
   assert.doesNotMatch(JSON.stringify(out), /SECRET_BODY/);
 });
 
+test('token-burn attributes safe thread totals to projects when session index has cwd', () => {
+  const project = tmpProject('TokenProject');
+  fs.mkdirSync(project, { recursive: true });
+  const db = path.join(project, 'codex.sqlite');
+  const sessionIndex = path.join(project, 'session_index.jsonl');
+  const otherProject = path.join(path.dirname(project), 'OtherProject');
+  execFileSync('sqlite3', [db, 'create table logs(id integer primary key, ts integer not null, ts_nanos integer not null, level text not null, target text not null, feedback_log_body text, module_path text, file text, line integer, thread_id text, process_uuid text, estimated_bytes integer not null default 0);']);
+  execFileSync('sqlite3', [db, "insert into logs(ts,ts_nanos,level,target,feedback_log_body,module_path,file,thread_id,process_uuid,estimated_bytes) values (2000000000,0,'INFO','codex_client::transport','SECRET_BODY','transport','src/app.ts','thread-metis','proc-a',8000);"]);
+  execFileSync('sqlite3', [db, "insert into logs(ts,ts_nanos,level,target,feedback_log_body,module_path,file,thread_id,process_uuid,estimated_bytes) values (2000000000,0,'INFO','tool','SECRET_BODY','tool.exec','src/other.ts','thread-other','proc-b',4000);"]);
+  fs.writeFileSync(sessionIndex, [
+    JSON.stringify({ id: 'thread-metis', cwd: project, updated_at: '2026-06-26T10:00:00.000Z' }),
+    JSON.stringify({ id: 'thread-other', cwd: otherProject, updated_at: '2026-06-26T10:00:00.000Z' }),
+  ].join('\n'));
+
+  const out = JSON.parse(run(['token-burn', project, '--since', '1', '--db', db, '--session-index', sessionIndex, '--json']));
+
+  assert.equal(out.projectAttribution.mode, 'session-index-cwd');
+  assert.ok(out.topProjects.some((row) => row.cwd === project && row.estimatedTokens === 2000));
+  assert.equal(out.projectLogEstimate.estimatedTokens, 2000);
+  assert.doesNotMatch(JSON.stringify(out), /SECRET_BODY/);
+});
+
+test('token-burn human output can use Russian payoff language', () => {
+  const project = tmpProject('TokenRu');
+  fs.mkdirSync(project, { recursive: true });
+  const db = path.join(project, 'codex.sqlite');
+  execFileSync('sqlite3', [db, 'create table logs(id integer primary key, ts integer not null, ts_nanos integer not null, level text not null, target text not null, feedback_log_body text, module_path text, file text, line integer, thread_id text, process_uuid text, estimated_bytes integer not null default 0);']);
+  execFileSync('sqlite3', [db, "insert into logs(ts,ts_nanos,level,target,feedback_log_body,module_path,file,estimated_bytes) values (2000000000,0,'INFO','tool','SECRET_BODY','tool.exec','src/app.ts',4000);"]);
+
+  const out = run(['token-burn', project, '--since', '1', '--db', db, '--lang', 'ru']);
+
+  assert.match(out, /сэкономлено\/можно не тянуть/);
+  assert.match(out, /Выигрыш/);
+  assert.match(out, /быстрый выигрыш|project context не показывает/);
+  assert.doesNotMatch(out, /SECRET_BODY/);
+});
+
+test('compact-chat writes a real smart handoff from project memory', () => {
+  const project = tmpProject('Metis');
+  write(path.join(project, 'README.md'), 3);
+  write(path.join(project, 'PRODUCT.md'), 3);
+  fs.mkdirSync(path.join(project, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'docs/CONTEXT_INDEX.md'), '# Context Index\n\n- One line: assistant OS\n');
+  fs.writeFileSync(path.join(project, 'docs/CURRENT_STATE.md'), '# Current State\n\n- BrainRuntime is active\n- Memory route is active\n');
+  fs.writeFileSync(path.join(project, 'docs/WORKLOG.md'), '### 2026-06-26 - Work\n\nResult: smart compact shipped\nEvidence:\n- npm test\n');
+  fs.writeFileSync(path.join(project, 'docs/CONTEXT_JOURNAL.md'), '### 2026-06-26 - finish\n\nDone: compacted context\nNext: inspect prune plan\n');
+
+  const out = run(['compact-chat', project, '--note', 'pressure threshold exceeded', '--apply']);
+  const handoff = fs.readFileSync(path.join(project, 'docs/COMPACT_HANDOFF.md'), 'utf8');
+
+  assert.match(out, /wrote docs\/COMPACT_HANDOFF.md/);
+  assert.match(handoff, /# Compact Handoff/);
+  assert.match(handoff, /pressure threshold exceeded/);
+  assert.match(handoff, /BrainRuntime is active/);
+  assert.match(handoff, /smart compact shipped/);
+  assert.match(handoff, /Context Budget/);
+  assert.doesNotMatch(handoff, /Compact Handoff Draft/);
+});
+
+test('compile-memory writes compiled context cards from worklog and journal', () => {
+  const project = tmpProject('CompileMemory');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  fs.writeFileSync(path.join(project, 'docs/CURRENT_STATE.md'), '# Current State\n\n- Runtime truth is compact\n');
+  fs.writeFileSync(path.join(project, 'docs/WORKLOG.md'), '### 2026-06-26 - Work\n\nResult: Added compiler layer\nFiles:\n- bin/context-gardener.mjs\nEvidence:\n- npm test\n');
+  fs.writeFileSync(path.join(project, 'docs/CONTEXT_JOURNAL.md'), '### 2026-06-26 - finish\n\nDone: compiled memory\nNext: run workflow status\n');
+
+  const out = JSON.parse(run(['compile-memory', project, '--apply', '--json']));
+  const compiled = fs.readFileSync(path.join(project, 'docs/COMPILED_CONTEXT.md'), 'utf8');
+
+  assert.equal(out.wrote, true);
+  assert.match(compiled, /# Compiled Context/);
+  assert.match(compiled, /Runtime truth is compact/);
+  assert.match(compiled, /Added compiler layer/);
+  assert.match(compiled, /bin\/context-gardener\.mjs/);
+});
+
+test('workflow-status and automation-plan expose guarded durable workflow', () => {
+  const project = tmpProject('Workflow');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+
+  const status = JSON.parse(run(['workflow-status', project, '--json']));
+  const plan = JSON.parse(run(['automation-plan', project, '--json']));
+
+  assert.ok(status.workflow.includes('compile-memory'));
+  assert.equal(status.state.pack, 'ready');
+  assert.equal(plan.mode, 'guarded-plan');
+  assert.ok(plan.automations.some((item) => item.name === 'memory-compile'));
+  assert.ok(plan.principles.some((item) => item.includes('Never auto-delete')));
+});
+
 test('repo validate succeeds once self-dogfood docs and profiles exist', () => {
   const out = run(['validate', '.']).trim();
 
@@ -351,6 +445,7 @@ test('audit output shows budget and next move', () => {
 
   assert.match(out, /Larpkeeper audit/);
   assert.match(out, /Default Start Estimate/);
+  assert.match(out, /Payoff/);
   assert.match(out, /Next Move/);
 });
 
@@ -376,9 +471,37 @@ test('budget labels default start versus task pack', () => {
   const taskOut = run(['budget', project, '--query', 'design rich studio', '--brief']);
 
   assert.match(defaultOut, /mode: default-start/);
-  assert.match(defaultOut, /default start:/);
+  assert.match(defaultOut, /will read first now:/);
   assert.match(taskOut, /mode: task-pack/);
-  assert.match(taskOut, /task pack:/);
+  assert.match(taskOut, /will read first now:/);
+});
+
+test('budget explains impact in human-readable mode', () => {
+  const project = tmpProject('BudgetExplain');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+  write(path.join(project, 'docs/LARGE.md'), 500);
+
+  const out = run(['budget', project]);
+
+  assert.match(out, /Larpkeeper context budget/);
+  assert.match(out, /progress:/);
+  assert.match(out, /What Improved/);
+  assert.match(out, /Why It Matters/);
+  assert.match(out, /Not Loaded On First Pass/);
+});
+
+test('budget can explain savings in Russian when requested', () => {
+  const project = tmpProject('BudgetRu');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+  write(path.join(project, 'docs/LARGE.md'), 500);
+
+  const out = run(['budget', project, '--lang', 'ru']);
+
+  assert.match(out, /сэкономлено/);
+  assert.match(out, /Что улучшили/);
+  assert.match(out, /Почему это важно/);
 });
 
 test('install-adapter writes managed block into AGENTS.md', () => {
@@ -478,4 +601,35 @@ test('recommend and watch point to maintenance actions when context is heavy', (
 
   assert.match(recommendOut, /(maintain|prune|doctor|bootstrap|pack)/);
   assert.match(watchOut, /(watch|compact-now|maintain)/);
+});
+
+test('recommend and watch explain why and impact', () => {
+  const project = tmpProject('ExplainHeavy');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+  write(path.join(project, 'docs/LARGE.md'), 500);
+
+  const recommendOut = run(['recommend', project]);
+  const watchOut = run(['watch', project]);
+
+  assert.match(recommendOut, /Larpkeeper recommendation/);
+  assert.match(recommendOut, /Why/);
+  assert.match(recommendOut, /Payoff/);
+  assert.match(recommendOut, /next unlock/);
+  assert.match(recommendOut, /Run Next/);
+  assert.match(watchOut, /Larpkeeper watch/);
+  assert.match(watchOut, /impact:/);
+  assert.match(watchOut, /payoff:/);
+});
+
+test('doctor reports warning impact and fix', () => {
+  const project = tmpProject('DoctorExplain');
+  fs.mkdirSync(project, { recursive: true });
+
+  const out = run(['doctor', project]);
+
+  assert.match(out, /Larpkeeper doctor/);
+  assert.match(out, /health:/);
+  assert.match(out, /impact:/);
+  assert.match(out, /fix:/);
 });

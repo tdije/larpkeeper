@@ -40,6 +40,7 @@ const DENY_PATH_PATTERNS = [
   /(^|\/).*\.pem$/i,
 ];
 const CODEX_LOG_DB = path.join(os.homedir(), '.codex/logs_2.sqlite');
+const CODEX_SESSION_INDEX = path.join(os.homedir(), '.codex/session_index.jsonl');
 const REPO_MAP_CACHE_VERSION = 2;
 const STANDARD = [
   ['docs/CONTEXT_INDEX.md', 'CONTEXT_INDEX.md'],
@@ -98,6 +99,24 @@ function section(title) {
 
 function bullet(text) {
   console.log(`  - ${text}`);
+}
+
+function explainLines(lines) {
+  return lines.filter(Boolean).map((line) => `  - ${line}`);
+}
+
+function textLang(flags = {}) {
+  const explicit = String(flags.lang || flags.language || process.env.LARPK_LANG || '').toLowerCase();
+  if (explicit.startsWith('ru')) return 'ru';
+  if (explicit.startsWith('en')) return 'en';
+  const taskText = String(flags.task || flags.query || flags.note || '');
+  if (/[А-Яа-яЁё]/.test(taskText)) return 'ru';
+  if (/^ru/i.test(String(process.env.LANG || process.env.LC_ALL || process.env.LC_CTYPE || ''))) return 'ru';
+  return 'en';
+}
+
+function tr(lang, en, ru) {
+  return lang === 'ru' ? ru : en;
 }
 
 function firstExisting(project, files) {
@@ -199,6 +218,9 @@ Usage:
   ${bin} codex <project> [--no-alt-screen] [-- PROMPT]   launch Codex with Larpkeeper banner
   ${bin} savings <project> [--query "..."] [--brief] [--json]   show the payoff
   ${bin} compact-chat <project> [--note "..."] [--apply]   pack the chat
+  ${bin} compile-memory <project> [--apply] [--json]   compile worklog/journal into current cards
+  ${bin} workflow-status <project> [--json]   durable audit->pack->work->finish->compile state
+  ${bin} automation-plan <project> [--json]   safe scheduled/pressure automation plan
   ${bin} diff-cards <project> [--json]   compare memory cards
   ${bin} validate <project>           quick sanity check
 
@@ -455,35 +477,87 @@ function maintenanceStatus(project) {
 
 function recommendNext(project, flags = {}) {
   const status = maintenanceStatus(project);
+  const lang = textLang(flags);
   let next = 'pack';
   let reason = 'start with a task-specific context pack';
+  let impact = 'keeps the next agent focused on the few files that matter for the task';
+  let command = `${commandName()} pack ${quotePath(project)} --task "..."`;
   if (status.profileProblems.length) {
     next = 'profile-sync';
     reason = 'profile schema or bundled profile drift needs a sync';
+    impact = 'profile drift makes Larpkeeper route agents through stale or invalid context rules';
+    command = `${commandName()} profile-sync ${quotePath(project)} --apply`;
   } else if (status.needsBootstrap) {
     next = 'bootstrap';
     reason = 'standard context files are missing';
+    impact = 'new sessions lack a clear map/current-state/worklog layer and may read too broadly';
+    command = `${commandName()} bootstrap ${quotePath(project)} --apply`;
   } else if (status.needsProfileSync) {
     next = 'profile-sync';
     reason = 'project profile docs are out of sync';
+    impact = 'humans and agents may disagree about which profile rules are current';
+    command = `${commandName()} profile-sync ${quotePath(project)} --apply`;
   } else if (status.needsHandoffCompact) {
     next = 'maintain';
     reason = 'handoff is too long and should be compacted';
+    impact = 'long handoffs behave like raw transcripts: expensive to read and easy to misinterpret';
+    command = `${commandName()} maintain ${quotePath(project)} --apply`;
   } else if (status.audit.risks.includes('hot-context-over-budget') || status.audit.risks.includes('large-active-docs')) {
     next = 'prune';
     reason = 'context is too heavy';
+    impact = 'large active docs keep getting pulled into sessions even when only a small current summary is needed';
+    command = `${commandName()} prune ${quotePath(project)}`;
   } else if (status.audit.risks.includes('many-agent-entry-surfaces') || status.audit.risks.includes('missing-active-memory')) {
     next = 'doctor';
     reason = 'instructions or memory surfaces need cleanup';
+    impact = 'agents may see competing instructions or miss the durable memory files';
+    command = `${commandName()} doctor ${quotePath(project)}`;
   }
   const result = {
     project,
     next,
     reason,
+    impact,
+    command,
+    payoff: {
+      hotContextLines: status.audit.hotContextLines,
+      broadContextLines: status.audit.broadContextLines,
+      avoidableLines: Math.max(0, status.audit.broadContextLines - 500),
+      largeDocs: status.audit.large.filter((f) => !f.path.includes('/archive/')).length,
+    },
     level: status.audit.hotContextLines > 800 ? 'compact-soon' : 'ok',
   };
   if (flags.json) console.log(JSON.stringify(result, null, 2));
-  else console.log(`${result.next}: ${result.reason}`);
+  else {
+    console.log(`${bold('Larpkeeper recommendation')} ${dim(`(${path.basename(project)})`)}`);
+    console.log(`${statusColor(result.level)}  ${result.next}`);
+    section(tr(lang, 'Why', 'Почему'));
+    for (const line of explainLines(lang === 'ru' ? [
+      result.reason === 'context is too heavy' ? 'контекст слишком тяжелый' : result.reason,
+      result.impact === 'large active docs keep getting pulled into sessions even when only a small current summary is needed'
+        ? 'большие активные docs снова попадают в сессии, хотя часто нужен только короткий current summary'
+        : result.impact,
+    ] : [result.reason, result.impact])) console.log(line);
+    section(tr(lang, 'Payoff', 'Выигрыш'));
+    for (const line of explainLines([
+      lang === 'ru'
+        ? `сейчас hot context: ${fmtNumber(result.payoff.hotContextLines)} строк; широкий scan: ${fmtNumber(result.payoff.broadContextLines)} строк`
+        : `hot context now: ${fmtNumber(result.payoff.hotContextLines)} lines; broad scan: ${fmtNumber(result.payoff.broadContextLines)} lines`,
+      result.payoff.avoidableLines > 0
+        ? lang === 'ru'
+          ? `следующий выигрыш: убрать примерно ${fmtNumber(result.payoff.avoidableLines)} строк из first-pass context`
+          : `next unlock: keep about ${fmtNumber(result.payoff.avoidableLines)} lines out of first-pass context`
+        : tr(lang, 'first-pass context is already close to target', 'first-pass context уже близко к цели'),
+      result.payoff.largeDocs
+        ? lang === 'ru'
+          ? `${result.payoff.largeDocs} больших активных doc дают самый быстрый cleanup-выигрыш`
+          : `${result.payoff.largeDocs} large active doc${result.payoff.largeDocs === 1 ? '' : 's'} are likely the highest-leverage cleanup`
+        : tr(lang, 'no large active docs are dominating the next step', 'нет больших активных docs, которые доминируют следующий шаг'),
+    ])) console.log(line);
+    section(tr(lang, 'Run Next', 'Дальше'));
+    console.log(`  ${cyan(result.command)}`);
+    console.log(`  ${dim(result.next === 'prune' ? 'plan-only; inspect before moving/archive actions' : result.command.includes('--apply') ? 'writes only the requested context-maintenance files' : 'read-only')}`);
+  }
   return result;
 }
 
@@ -498,9 +572,25 @@ function watch(project, flags = {}) {
     next,
     score: heavy ? 82 : status.needsBootstrap ? 48 : 12,
     reason: heavy ? 'context is heavy and should be compacted' : status.needsBootstrap ? 'context skeleton is missing' : 'context looks healthy',
+    impact: heavy
+      ? 'expect slower starts and more stale-doc drift unless you compact or use task packs'
+      : status.needsBootstrap
+        ? 'missing skeleton docs make the next session guess where project truth lives'
+        : 'the project can stay on scoped pack/repo-map flow',
+    payoff: {
+      hotContextLines: status.audit.hotContextLines,
+      broadContextLines: status.audit.broadContextLines,
+      avoidableLines: Math.max(0, status.audit.broadContextLines - 500),
+    },
   };
   if (flags.json) console.log(JSON.stringify(result, null, 2));
-  else console.log(`${result.level} score=${result.score} ${result.reason} -> ${result.next}`);
+  else {
+    console.log(`${bold('Larpkeeper watch')} ${statusColor(result.level)} score=${result.score}`);
+    console.log(`reason: ${result.reason}`);
+    console.log(`impact: ${result.impact}`);
+    console.log(`payoff: hot=${fmtNumber(result.payoff.hotContextLines)} lines, broad=${fmtNumber(result.payoff.broadContextLines)} lines, next unlock=${fmtNumber(result.payoff.avoidableLines)} lines`);
+    console.log(`next: ${commandName()} ${result.next} ${quotePath(project)}${result.next === 'pack' ? ' --task "..."' : ''}`);
+  }
 }
 
 function bootstrap(project, flags = {}) {
@@ -843,6 +933,20 @@ function money(tokens, usdPerMillion = 1.25) {
   return Number(((tokens / 1_000_000) * usdPerMillion).toFixed(4));
 }
 
+function fmtNumber(value) {
+  return new Intl.NumberFormat('en-US').format(Math.round(Number(value || 0)));
+}
+
+function progressBar(percent, width = 14) {
+  const safe = Math.max(0, Math.min(100, Number(percent || 0)));
+  const filled = Math.round((safe / 100) * width);
+  return `${'█'.repeat(filled)}${'░'.repeat(width - filled)} ${safe}%`;
+}
+
+function linesOverTarget(lines, target) {
+  return Math.max(0, Number(lines || 0) - Number(target || 0));
+}
+
 function mdFiles(project, cfg) {
   return walk(project, cfg).filter((f) => f.endsWith('.md')).map((f) => ({
     path: rel(project, f),
@@ -951,7 +1055,31 @@ function relatedTestFiles(project, sourcePath) {
   return candidates.filter((f) => fs.existsSync(path.join(project, f))).slice(0, 4);
 }
 
-function scoreSourceForTask(file, symbols, terms) {
+function sourceModuleKey(sourcePath) {
+  const withoutExt = sourcePath.replace(/\.[^.]+$/, '');
+  return withoutExt.split('/').slice(-2).join('/').toLowerCase();
+}
+
+function importFanIn(files) {
+  const byKey = new Map();
+  const sourceKeys = new Map(files.map((file) => [sourceModuleKey(file.path), file.path]));
+  for (const file of files) {
+    let text = '';
+    try { text = fs.readFileSync(file.abs, 'utf8'); } catch {}
+    for (const spec of extractImports(file.path, text)) {
+      if (!spec.startsWith('.')) continue;
+      const baseDir = path.dirname(file.path);
+      const normalized = path.normalize(path.join(baseDir, spec)).replaceAll(path.sep, '/').toLowerCase();
+      const key = normalized.split('/').slice(-2).join('/').replace(/\.[^.]+$/, '');
+      const target = sourceKeys.get(key);
+      if (!target) continue;
+      byKey.set(target, (byKey.get(target) || 0) + 1);
+    }
+  }
+  return byKey;
+}
+
+function scoreSourceForTask(file, symbols, terms, signals = {}) {
   const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
   let score = 0;
   for (const term of terms) if (hay.includes(term)) score += 50;
@@ -961,6 +1089,8 @@ function scoreSourceForTask(file, symbols, terms) {
   if (file.lines > 0 && file.lines <= 240) score += 8;
   if (file.lines > 600) score -= 12;
   if (file.ageDays <= 14) score += 4;
+  if (signals.relatedTests?.length) score += 6;
+  if (signals.importedBy) score += Math.min(20, signals.importedBy * 4);
   return score;
 }
 
@@ -982,6 +1112,7 @@ function buildRepoMap(project, flags = {}) {
   const terms = queryTerms(task);
   const budgetTokens = Math.max(800, Number(flags.budget || flags['repo-map-budget'] || flags.repoMapBudget || 4000));
   const files = sourceFiles(project, cfg);
+  const fanIn = importFanIn(files);
   const signature = sourceSignature(files);
   const cacheFile = repoMapCacheFile(project);
   const cacheKey = JSON.stringify({ v: REPO_MAP_CACHE_VERSION, task, budgetTokens, signature });
@@ -996,15 +1127,24 @@ function buildRepoMap(project, flags = {}) {
     try { text = fs.readFileSync(file.abs, 'utf8'); } catch {}
     const symbols = extractSymbols(file.path, text);
     const imports = extractImports(file.path, text);
+    const relatedTests = relatedTestFiles(project, file.path);
+    const importedBy = fanIn.get(file.path) || 0;
     const hay = `${file.path} ${symbols.join(' ')}`.toLowerCase();
     const termMatches = terms.filter((term) => hay.includes(term)).length;
+    const signals = {
+      relatedTests,
+      importedBy,
+      recent: file.ageDays <= 14,
+      small: file.lines > 0 && file.lines <= 240,
+    };
     return {
       path: file.path,
       lines: file.lines,
       symbols: symbols.slice(0, 10),
       imports: imports.slice(0, 8),
-      relatedTests: relatedTestFiles(project, file.path),
-      score: scoreSourceForTask(file, symbols, terms),
+      relatedTests,
+      signals,
+      score: scoreSourceForTask(file, symbols, terms, signals),
       termMatches,
     };
   }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
@@ -1022,6 +1162,7 @@ function buildRepoMap(project, flags = {}) {
       symbols: row.symbols,
       imports: row.imports,
       relatedTests: row.relatedTests,
+      signals: row.signals,
       reason: row.termMatches > 0 ? 'task/path/symbol match' : 'high-signal source file',
     });
     estimatedTokens += cost;
@@ -1072,6 +1213,14 @@ function formatRepoMap(map) {
     lines.push(`- ${f.path} (${f.lines}l) symbols: ${symbols}`);
     if (f.imports?.length) lines.push(`  imports: ${f.imports.slice(0, 5).join(', ')}`);
     if (f.relatedTests?.length) lines.push(`  tests: ${f.relatedTests.join(', ')}`);
+    if (f.signals) {
+      const signalText = [
+        f.signals.importedBy ? `imported_by=${f.signals.importedBy}` : '',
+        f.signals.recent ? 'recent' : '',
+        f.signals.small ? 'small' : '',
+      ].filter(Boolean).join(', ');
+      if (signalText) lines.push(`  signals: ${signalText}`);
+    }
   }
   return lines.join('\n');
 }
@@ -1320,6 +1469,97 @@ function sqliteJson(db, sql) {
   return out.stdout.trim() ? JSON.parse(out.stdout) : [];
 }
 
+function normalizePathForCompare(value) {
+  if (!value) return '';
+  return path.resolve(String(value).replace(/^~(?=$|\/)/, os.homedir()));
+}
+
+function safeProjectLabel(value) {
+  const normalized = normalizePathForCompare(value);
+  if (!normalized) return '(unknown)';
+  const base = path.basename(normalized);
+  const parent = path.basename(path.dirname(normalized));
+  return parent && parent !== path.sep ? `${parent}/${base}` : base;
+}
+
+function codexSessionRows(indexFile = CODEX_SESSION_INDEX) {
+  if (!fs.existsSync(indexFile)) return [];
+  const rows = [];
+  const text = fs.readFileSync(indexFile, 'utf8');
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line);
+      rows.push({
+        id: String(row.id || row.thread_id || row.threadId || row.session_id || row.sessionId || ''),
+        thread: String(row.thread_id || row.threadId || row.id || ''),
+        process: String(row.process_uuid || row.processUuid || ''),
+        cwd: normalizePathForCompare(row.cwd || row.project_cwd || row.projectPath || row.repo || row.root || row.path || ''),
+        project: row.project || row.projectName || null,
+        updatedAt: row.updated_at || row.updatedAt || row.ts || row.timestamp || null,
+      });
+    } catch {
+      // Session index is advisory; malformed rows should not break token-burn.
+    }
+  }
+  return rows.filter((row) => row.id || row.thread || row.process || row.cwd || row.project);
+}
+
+function buildCodexProjectIndex(project, flags = {}) {
+  const indexFile = flags['session-index'] || flags.sessionIndex || CODEX_SESSION_INDEX;
+  const rows = codexSessionRows(indexFile);
+  const byThread = new Map();
+  const byProcess = new Map();
+  for (const row of rows) {
+    const label = row.cwd ? safeProjectLabel(row.cwd) : (row.project ? String(row.project) : '(unknown)');
+    const value = { ...row, label };
+    if (row.thread && row.thread !== '(none)') byThread.set(row.thread, value);
+    if (row.id && row.id !== '(none)') byThread.set(row.id, value);
+    if (row.process && row.process !== '(none)') byProcess.set(row.process, value);
+  }
+  return {
+    source: fs.existsSync(indexFile) ? indexFile : null,
+    rows: rows.length,
+    hasCwd: rows.some((row) => Boolean(row.cwd)),
+    projectRoot: normalizePathForCompare(project),
+    byThread,
+    byProcess,
+  };
+}
+
+function projectFromLogRow(row, projectIndex) {
+  const thread = String(row.thread || row.thread_id || '');
+  const process = String(row.process || row.process_uuid || '');
+  const matched = projectIndex.byThread.get(thread) || projectIndex.byProcess.get(process);
+  if (!matched) return { label: '(unknown)', cwd: null, matchedBy: null };
+  return {
+    label: matched.label || '(unknown)',
+    cwd: matched.cwd || null,
+    matchedBy: projectIndex.byThread.has(thread) ? 'thread' : 'process',
+  };
+}
+
+function aggregateProjectsFromThreads(threadRows, projectIndex) {
+  const totals = new Map();
+  for (const row of threadRows) {
+    const projectInfo = projectFromLogRow(row, projectIndex);
+    const key = projectInfo.cwd || projectInfo.label || '(unknown)';
+    const existing = totals.get(key) || {
+      project: projectInfo.label || '(unknown)',
+      cwd: projectInfo.cwd,
+      matchedBy: projectInfo.matchedBy,
+      rows: 0,
+      estimatedTokens: 0,
+      threads: 0,
+    };
+    existing.rows += Number(row.rows || 0);
+    existing.estimatedTokens += Math.ceil(Number(row.bytes || 0) / 4);
+    existing.threads += 1;
+    totals.set(key, existing);
+  }
+  return [...totals.values()].sort((a, b) => b.estimatedTokens - a.estimatedTokens).slice(0, 10);
+}
+
 function tokenBurnRecommendations(result) {
   const recs = [];
   const targetNames = result.topTargets.map((row) => row.target).join(' ').toLowerCase();
@@ -1346,11 +1586,13 @@ function tokenBurnRecommendations(result) {
 function tokenBurn(project, flags = {}) {
   const db = flags.db || CODEX_LOG_DB;
   const since = parseSinceSeconds(flags.since || 'today');
+  const lang = textLang(flags);
   const exists = fs.existsSync(db);
   const auditResult = audit(project, { quiet: true });
   const estimate = computeBudget(project, { ...flags, brief: true });
   const result = {
     project,
+    lang,
     since: flags.since || 'today',
     source: exists ? db : null,
     mode: exists ? 'codex-sqlite-estimated-bytes' : 'project-estimate-only',
@@ -1359,6 +1601,8 @@ function tokenBurn(project, flags = {}) {
     topModules: [],
     topProcesses: [],
     topThreads: [],
+    topProjects: [],
+    projectLogEstimate: null,
     dailyBuckets: [],
     recommendations: [],
     projectEstimate: {
@@ -1376,6 +1620,7 @@ function tokenBurn(project, flags = {}) {
   };
   if (exists) {
     const where = `ts >= ${Number(since) || 0}`;
+    const projectIndex = buildCodexProjectIndex(project, flags);
     const totalRows = sqliteJson(db, `select count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where};`)[0] || { rows: 0, bytes: 0 };
     result.totals = {
       rows: Number(totalRows.rows || 0),
@@ -1390,31 +1635,116 @@ function tokenBurn(project, flags = {}) {
       .map((r) => ({ process: r.process || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
     result.topThreads = sqliteJson(db, `select coalesce(thread_id,'(none)') as thread, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by thread order by bytes desc limit 10;`)
       .map((r) => ({ thread: r.thread || '(none)', rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    const threadProjectRows = sqliteJson(db, `select coalesce(thread_id,'(none)') as thread, coalesce(process_uuid,'(none)') as process, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by thread, process order by bytes desc limit 500;`);
+    result.topProjects = aggregateProjectsFromThreads(threadProjectRows, projectIndex);
+    const projectRoot = projectIndex.projectRoot;
+    const currentRows = result.topProjects.filter((row) => row.cwd && projectRoot && (row.cwd === projectRoot || row.cwd.startsWith(`${projectRoot}${path.sep}`)));
+    if (currentRows.length) {
+      result.projectLogEstimate = currentRows.reduce((acc, row) => ({
+        project: safeProjectLabel(projectRoot),
+        cwd: projectRoot,
+        rows: acc.rows + row.rows,
+        estimatedTokens: acc.estimatedTokens + row.estimatedTokens,
+        threads: acc.threads + row.threads,
+      }), { project: safeProjectLabel(projectRoot), cwd: projectRoot, rows: 0, estimatedTokens: 0, threads: 0 });
+    }
     result.dailyBuckets = sqliteJson(db, `select date(ts, 'unixepoch') as day, count(*) as rows, coalesce(sum(estimated_bytes),0) as bytes from logs where ${where} group by day order by day desc limit 14;`)
       .map((r) => ({ day: r.day, rows: Number(r.rows || 0), estimatedTokens: Math.ceil(Number(r.bytes || 0) / 4) }));
+    result.projectAttribution = {
+      mode: projectIndex.hasCwd ? 'session-index-cwd' : 'thread/process-best-effort',
+      source: projectIndex.source,
+      indexedSessions: projectIndex.rows,
+      unknownTokens: result.topProjects.find((row) => row.project === '(unknown)')?.estimatedTokens || 0,
+    };
+    if (!projectIndex.hasCwd) {
+      result.warnings.push('project attribution is limited: Codex log rows do not contain cwd and session index has no cwd fields');
+    }
   }
   result.recommendations = tokenBurnRecommendations(result);
   if (flags.json) console.log(JSON.stringify(result, null, 2));
   else {
-    console.log(`# token burn\n`);
-    console.log(`mode: ${result.mode}`);
-    if (result.totals) console.log(`estimated: ~${result.totals.estimatedTokens} tokens from ${result.totals.rows} safe log rows`);
-    console.log(`project avoidable context: ~${result.projectEstimate.avoidableTokens} tokens`);
+    const lang = result.lang || 'en';
+    const totalTokens = result.totals?.estimatedTokens || 0;
+    const avoidable = result.projectEstimate.avoidableTokens || 0;
+    const unknown = result.projectAttribution?.unknownTokens || 0;
+    console.log(`${bold('Larpkeeper token burn')} ${dim(`(${path.basename(project)})`)}`);
+    console.log(`${tr(lang, 'verdict', 'вердикт')}: ${totalTokens > 1000000 || avoidable > 200000 ? red(tr(lang, 'high pressure', 'высокое давление')) : totalTokens > 100000 || avoidable > 50000 ? yellow(tr(lang, 'watch', 'следить')) : green('ok')}`);
+    console.log('');
+    console.log(`${tr(lang, 'safe estimate', 'безопасная оценка')}   ~${totalTokens} ${tr(lang, 'tokens', 'токенов')}${result.totals ? ` ${tr(lang, 'from', 'из')} ${result.totals.rows} aggregate log rows` : ` ${tr(lang, 'from project context only', 'только из project context')}`}`);
+    console.log(`${tr(lang, 'saved/avoidable', 'сэкономлено/можно не тянуть')} ~${avoidable} ${tr(lang, 'avoidable tokens', 'токенов')}; hot context ${result.projectEstimate.hotContextLines} ${tr(lang, 'lines', 'строк')}`);
+    console.log(`mode            ${result.mode}`);
+    if (result.projectAttribution) {
+      console.log(`attribution     ${result.projectAttribution.mode}; indexed sessions ${result.projectAttribution.indexedSessions}`);
+      if (unknown) console.log(`unknown bucket  ~${unknown} tokens; Codex logs do not expose cwd for exact project mapping`);
+    }
+    section(tr(lang, 'Payoff', 'Выигрыш'));
+    for (const line of explainLines([
+      avoidable
+        ? lang === 'ru'
+          ? `быстрый выигрыш: можно не тянуть ~${fmtNumber(avoidable)} project-context токенов через более узкие startup packs`
+          : `quick win: ~${fmtNumber(avoidable)} project-context tokens can be avoided with tighter startup packs`
+        : tr(lang, 'project context is not showing a large avoidable bucket', 'project context не показывает большой avoidable bucket'),
+      result.projectEstimate.hotContextLines
+        ? lang === 'ru'
+          ? `hot context сейчас ${fmtNumber(result.projectEstimate.hotContextLines)} строк; нормальная цель для first-pass context ближе к 500-800 строкам`
+          : `hot context is ${fmtNumber(result.projectEstimate.hotContextLines)} lines; target is closer to 500-800 lines for first-pass context`
+        : '',
+      totalTokens
+        ? lang === 'ru'
+          ? `сегодня safe aggregate burn ~${fmtNumber(totalTokens)} токенов; ниже видно, где утекает внимание`
+          : `today's safe aggregate burn is ~${fmtNumber(totalTokens)} tokens; top targets below show where the attention leak is`
+        : '',
+      result.topTargets[0]?.estimatedTokens
+        ? lang === 'ru'
+          ? `самый большой bucket: ${result.topTargets[0].target} — ~${fmtNumber(result.topTargets[0].estimatedTokens)} токенов`
+          : `largest single bucket: ${result.topTargets[0].target} at ~${fmtNumber(result.topTargets[0].estimatedTokens)} tokens`
+        : '',
+    ])) console.log(line);
+    section(tr(lang, 'Why It Matters', 'Почему это важно'));
+    for (const line of explainLines([
+      tr(lang, 'token burn is usually repeated context plus noisy tool output, not just model reasoning', 'token burn чаще всего съедают повторенный контекст и шумный tool output, а не только reasoning модели'),
+      avoidable
+        ? tr(lang, 'avoidable project context means agents are reading docs that should be scoped, archived, or summarized', 'avoidable project context значит, что агенты читают docs, которые надо scoped/archive/summary')
+        : tr(lang, 'project context is not the main pressure point right now', 'project context сейчас не главный источник давления'),
+      unknown
+        ? tr(lang, 'unknown project attribution is a data-quality limit; use this as a burn signal, not billing truth', 'unknown project attribution — ограничение данных; это сигнал burn, а не биллинговая истина')
+        : tr(lang, 'project attribution can point to the hottest repo/session buckets', 'project attribution может показать самые горячие repo/session buckets'),
+    ])) console.log(line);
     if (result.topTargets.length) {
-      console.log(`\ntop log targets:`);
+      section(tr(lang, 'Top Log Targets', 'Топ источников burn'));
       for (const row of result.topTargets.slice(0, 8)) console.log(`- ${row.target}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
     }
     if (result.topModules.length) {
-      console.log(`\ntop modules/files:`);
+      section(tr(lang, 'Top Modules/Files', 'Топ modules/files'));
       for (const row of result.topModules.slice(0, 8)) console.log(`- ${row.source}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
     }
+    if (result.topProjects.length) {
+      section(tr(lang, 'Top Projects', 'Топ проектов'));
+      for (const row of result.topProjects.slice(0, 6)) console.log(`- ${row.project}: ~${row.estimatedTokens} tok (${row.threads} threads)`);
+    }
+    if (result.projectLogEstimate) {
+      section(tr(lang, 'Current Project Logs', 'Логи текущего проекта'));
+      console.log(`- ~${result.projectLogEstimate.estimatedTokens} tok (${result.projectLogEstimate.threads} threads)`);
+    }
     if (result.dailyBuckets.length) {
-      console.log(`\ndaily:`);
+      section(tr(lang, 'Daily Buckets', 'По дням'));
       for (const row of result.dailyBuckets.slice(0, 7)) console.log(`- ${row.day}: ~${row.estimatedTokens} tok (${row.rows} rows)`);
     }
     if (result.recommendations.length) {
-      console.log(`\nwhat to cut first:`);
-      for (const item of result.recommendations) console.log(`- ${item}`);
+      section(tr(lang, 'What To Cut First', 'Что резать первым'));
+      for (const item of result.recommendations) {
+        const ru = String(item)
+          .replace('Transport/model stream dominates: reduce long turns, compact earlier, and avoid repeating full context in follow-ups.', 'Transport/model stream доминирует: делай turns короче, compact раньше и не повторяй полный контекст в follow-up.')
+          .replace('TUI/chat rendering is noisy: keep assistant/tool summaries shorter and avoid pasting long raw output.', 'TUI/chat rendering шумит: держи assistant/tool summaries короче и не вставляй сырой длинный output.')
+          .replace('MCP traffic is visible: prefer fewer large MCP calls and summarize MCP results before continuing.', 'MCP traffic заметен: меньше крупных MCP calls, summarize результаты перед продолжением.')
+          .replace('Tool output is visible: use `larp run` or `larp compress-output` for tests, logs, grep, and build output.', 'Tool output заметен: используй `larp run` или `larp compress-output` для tests/logs/grep/build.')
+          .replace('Project context has avoidable tokens: start sessions with `larp codex-preflight . --task "..."`.', 'Project context содержит avoidable tokens: начинай сессии через `larp codex-preflight . --task "..."`.');
+        console.log(`- ${lang === 'ru' ? ru : item}`);
+      }
+    }
+    if (result.warnings.length) {
+      section(tr(lang, 'Limits', 'Ограничения'));
+      for (const item of result.warnings.slice(0, 4)) console.log(`- ${item}`);
     }
   }
   return result;
@@ -1594,6 +1924,10 @@ function audit(project, flags = {}) {
   const missing = missingStandardFiles(project);
   const considered = files.filter((f) => !['vendor'].includes(classify(f)));
   const large = considered.filter((f) => f.lines > (cfg.budgets?.largeDocLines || 400)).map((f) => ({ path: f.path, lines: f.lines }));
+  const largeActive = large.filter((f) => {
+    const role = classify(f);
+    return role !== 'archive' && role !== 'agent-skill';
+  });
   const duplicateEntrySurfaces = files
     .filter((f) => ['agent-entry'].includes(classify(f)))
     .map((f) => ({ path: f.path, lines: f.lines }));
@@ -1603,11 +1937,11 @@ function audit(project, flags = {}) {
   const broadContextFiles = new Map();
   for (const f of activeMemory) broadContextFiles.set(f.path, f.lines);
   for (const f of duplicateEntrySurfaces) broadContextFiles.set(f.path, f.lines);
-  for (const f of large.filter((x) => !x.path.includes('/archive/'))) broadContextFiles.set(f.path, f.lines);
+  for (const f of largeActive) broadContextFiles.set(f.path, f.lines);
   const broadContextLines = [...broadContextFiles.values()].reduce((sum, lines) => sum + lines, 0);
   const risks = [];
   if (standardPath(project, 'contextIndex') && missing.includes(standardPath(project, 'contextIndex'))) risks.push('missing-default-context-index');
-  if (large.some((f) => classify(f) !== 'archive')) risks.push('large-active-docs');
+  if (largeActive.length) risks.push('large-active-docs');
   if (duplicateEntrySurfaces.length > 2) risks.push('many-agent-entry-surfaces');
   if (!activeMemory.length) risks.push('missing-active-memory');
   if (hotContextLines > 800) risks.push('hot-context-over-budget');
@@ -1657,6 +1991,7 @@ function printAudit(r) {
   console.log(`before         ${savings.beforeLines} lines (~${savings.beforeTokens} tok)`);
   console.log(`default start  ${savings.afterLines} lines (~${savings.afterTokens} tok)`);
   console.log(`avoided/start  ${savings.savedLines} lines (~${savings.savedTokens} tok, ${savings.savedPct}%)`);
+  console.log(`progress       ${progressBar(savings.savedPct)}`);
   console.log(`confidence     ${savings.confidence} - ${savings.confidenceReason}`);
   if (savings.readPack.length) {
     console.log(`read first     ${savings.readPack.join(', ')}`);
@@ -1664,6 +1999,15 @@ function printAudit(r) {
     console.log(`read first     missing; bootstrap or add a project profile`);
   }
   console.log(`task pack      run ${commandName()} pack ${quotePath(r.project)} --task "..."`);
+
+  section('Payoff');
+  bullet(`already avoiding ~${fmtNumber(savings.savedTokens)} tokens per default start (${savings.savedPct}% less broad markdown)`);
+  if (savings.afterLines > 500) {
+    bullet(`next unlock: cut another ${fmtNumber(linesOverTarget(savings.afterLines, 500))} startup lines to get under the 500-line target`);
+  } else {
+    bullet('startup pack is already under the 500-line target; the next win is task-specific pack accuracy');
+  }
+  if (r.large.length) bullet(`biggest dopamine hit: move/summarize ${r.large.length} large active doc${r.large.length === 1 ? '' : 's'}`);
 
   section('What This Means');
   console.log(humanAuditSummary(r, savings));
@@ -2141,6 +2485,7 @@ function caveman(project, flags = {}) {
 
 function computeBudget(project, flags = {}) {
   const targetLines = Number(flags['target-lines'] || flags.targetLines || 500);
+  const lang = textLang(flags);
   const r = audit(project, { quiet: true });
   const g = buildGather(project, flags, r);
   const unique = [...new Set(g.recommendedContextPack)];
@@ -2155,6 +2500,7 @@ function computeBudget(project, flags = {}) {
   const hasTaskSignal = Boolean(flags.query || flags.task);
   return {
     project,
+    lang,
     query: flags.query || null,
     task: flags.task || null,
     brief: Boolean(flags.brief),
@@ -2178,35 +2524,80 @@ function computeBudget(project, flags = {}) {
     approxUsdSavedPerRead: money(approxTokensFromLines(saved)),
     status: noReadPack ? 'no-read-pack' : after <= targetLines ? 'within-target' : 'over-target',
     readPack: unique,
-    reduceCandidates: r.large.filter((f) => !unique.includes(f.path)).slice(0, 20),
+    reduceCandidates: r.large.filter((f) => {
+      const role = classify(f);
+      return role !== 'archive' && role !== 'agent-skill' && !unique.includes(f.path);
+    }).slice(0, 20),
   };
 }
 
 function printBudget(result) {
+  const lang = result.lang || 'en';
   if (result.brief) {
     console.log(`mode: ${result.estimateKind}`);
-    console.log(`before: ${result.beforeLines} lines (~${result.beforeTokens} tok)`);
-    console.log(`${result.estimateKind === 'task-pack' ? 'task pack' : 'default start'}: ${result.afterLines} lines (~${result.afterTokens} tok)`);
-    console.log(`avoided: ${result.savedLines} lines (~${result.savedTokens} tok, ${result.savedPct}%)`);
+    console.log(`could read without Larpkeeper: ${result.beforeLines} lines (~${result.beforeTokens} tok)`);
+    console.log(`will read first now: ${result.afterLines} lines (~${result.afterTokens} tok)`);
+    console.log(`skipped as not needed now: ${result.savedLines} lines (~${result.savedTokens} tok, ${result.savedPct}% less first-read context)`);
     console.log(`confidence: ${result.confidence} - ${result.confidenceReason}`);
     console.log(`status: ${result.status}`);
     return;
   }
-  console.log(`# context budget\n`);
+  console.log(`${bold('Larpkeeper context budget')} ${dim(`(${path.basename(result.project)})`)}`);
+  console.log(`${tr(lang, 'verdict', 'вердикт')}: ${result.status === 'within-target' ? green(tr(lang, 'within target', 'в цели')) : result.status === 'no-read-pack' ? yellow(tr(lang, 'no read pack', 'нет read pack')) : red(tr(lang, 'over target', 'выше цели'))}`);
   console.log(`mode: ${result.estimateKind}`);
-  console.log(`before: ${result.beforeLines} lines`);
-  console.log(`${result.estimateKind === 'task-pack' ? 'task pack' : 'default start'}: ${result.afterLines} lines`);
-  console.log(`avoided: ${result.savedLines} lines (${result.savedPct}%)`);
-  console.log(`tokens: ~${result.beforeTokens} -> ~${result.afterTokens}, saved ~${result.savedTokens}`);
-  console.log(`approx saved/read: $${result.approxUsdSavedPerRead}`);
+  console.log(`${tr(lang, 'could read without Larpkeeper', 'без Larpkeeper агент мог потащить')}: ${result.beforeLines} ${tr(lang, 'lines', 'строк')} (~${result.beforeTokens} tok)`);
+  console.log(`${tr(lang, 'will read first now', 'теперь первым чтением берет')}: ${result.afterLines} ${tr(lang, 'lines', 'строк')} (~${result.afterTokens} tok)`);
+  console.log(`${tr(lang, 'skipped as not needed now', 'не читаем лишнего сейчас')}: ${result.savedLines} ${tr(lang, 'lines', 'строк')} (~${result.savedTokens} tok, ${result.savedPct}% ${tr(lang, 'less first-read context', 'меньше стартового контекста')})`);
+  console.log(`${tr(lang, 'token effect', 'эффект по токенам')}: ~${result.beforeTokens} -> ~${result.afterTokens}; ${tr(lang, 'not sent now', 'сейчас не отправляем')} ~${result.savedTokens}`);
+  console.log(`progress: ${progressBar(result.savedPct)}`);
+  console.log(`${tr(lang, 'approx saved/read', 'примерно сэкономлено за чтение')}: $${result.approxUsdSavedPerRead}`);
   console.log(`confidence: ${result.confidence} - ${result.confidenceReason}`);
   console.log(`target: ${result.targetLines} lines`);
   console.log(`status: ${result.status}`);
-  console.log(`\nread pack:`);
+  section(tr(lang, 'What Improved', 'Что улучшили'));
+  for (const line of explainLines([
+    result.savedTokens > 0
+      ? lang === 'ru'
+        ? `раньше первый заход мог тащить ~${fmtNumber(result.beforeTokens)} токенов, теперь стартует с ~${fmtNumber(result.afterTokens)}`
+        : `first pass could have pulled ~${fmtNumber(result.beforeTokens)} tokens, now it starts with ~${fmtNumber(result.afterTokens)}`
+      : tr(lang, 'no measurable context saving yet because no read pack exists', 'измеримой экономии пока нет, потому что read pack не собран'),
+    result.savedPct > 0
+      ? lang === 'ru'
+        ? `${result.savedPct}% широкого markdown остается доступным, но не грузится в первое чтение`
+        : `${result.savedPct}% of broad markdown stays available but out of the first read`
+      : tr(lang, '0% avoided means the project needs a context index/profile before payoff appears', '0% экономии значит, что проекту нужен context index/profile'),
+    result.afterLines > result.targetLines
+      ? lang === 'ru'
+        ? `следующая цель: срезать еще ${fmtNumber(linesOverTarget(result.afterLines, result.targetLines))} строк из ${result.estimateKind} pack`
+        : `next target: cut ${fmtNumber(linesOverTarget(result.afterLines, result.targetLines))} more lines from the ${result.estimateKind} pack`
+      : lang === 'ru'
+        ? `цель достигнута: ${fmtNumber(result.afterLines)} строк внутри бюджета ${fmtNumber(result.targetLines)}`
+        : `target hit: ${fmtNumber(result.afterLines)} lines is within the ${fmtNumber(result.targetLines)} line budget`,
+  ])) console.log(line);
+  section(tr(lang, 'Why It Matters', 'Почему это важно'));
+  for (const line of explainLines([
+    result.estimateKind === 'task-pack'
+      ? tr(lang, 'this estimates the context a task-specific agent should read before implementation', 'это оценка контекста, который task-agent должен прочитать перед реализацией')
+      : tr(lang, 'this estimates the default startup context before the task is known', 'это оценка стартового контекста до того, как известна конкретная задача'),
+    result.savedTokens > 0
+      ? tr(lang, 'saved tokens are old/broad markdown the agent can avoid without deleting the underlying knowledge', 'сэкономленные токены — это старый/широкий markdown, который можно не читать без удаления знания')
+      : tr(lang, 'there is no clear read pack yet, so the next session may either under-read or over-read', 'четкого read pack пока нет, поэтому следующая сессия может недочитать или перечитать лишнее'),
+    result.status === 'over-target'
+      ? tr(lang, 'over-target packs should be split into current summary plus scoped references', 'over-target pack нужно разнести на current summary и scoped references')
+      : tr(lang, 'within-target packs are suitable as the first read, then expand through repo-map/exact search', 'pack внутри цели подходит для первого чтения, дальше расширяемся через repo-map/exact search'),
+  ])) console.log(line);
+  section(tr(lang, 'Read Pack', 'Read Pack'));
   for (const f of result.readPack) console.log(`- ${f}`);
   if (result.reduceCandidates.length) {
-    console.log(`\nkeep out of default context:`);
-    for (const f of result.reduceCandidates.slice(0, 10)) console.log(`- ${f.path} (${f.lines} lines)`);
+    const shown = result.reduceCandidates.slice(0, 10);
+    const shownLines = shown.reduce((sum, f) => sum + Number(f.lines || 0), 0);
+    section(tr(lang, 'Not Loaded On First Pass', 'Что не грузим в первый заход'));
+    console.log(tr(
+      lang,
+      `These files are still available, but Larpkeeper keeps them out of the startup pack until the task needs them. Top ${shown.length} shown: ${fmtNumber(shownLines)} lines.`,
+      `Эти файлы не удалены и остаются доступны, но Larpkeeper не кладет их в стартовый pack без необходимости. Ниже топ-${shown.length}: ${fmtNumber(shownLines)} строк.`,
+    ));
+    for (const f of shown) console.log(`- ${f.path} (${f.lines} ${tr(lang, 'lines', 'строк')})`);
   }
 }
 
@@ -2251,7 +2642,7 @@ function prune(project, flags = {}) {
   const actions = [];
   for (const f of r.large) {
     const role = classify({ path: f.path });
-    if (role === 'agent-skill') actions.push({ action: 'adapter-only-not-default-read', path: f.path, reason: `${f.lines} lines inside skill bundle` });
+    if (role === 'archive' || role === 'agent-skill') continue;
     else if (authoritative.has(f.path)) actions.push({ action: 'summarize-or-index-authoritative-doc', path: f.path, reason: `${f.lines} lines but selected by profile` });
     else if (!f.path.includes('/archive/')) actions.push({ action: 'archive-or-split', path: f.path, reason: `${f.lines} lines` });
   }
@@ -2606,15 +2997,385 @@ function compactChat(project, flags = {}) {
   const outRel = 'docs/COMPACT_HANDOFF.md';
   const out = path.join(project, outRel);
   const note = flags.note || 'Fill this with the current conversation summary before compaction.';
-  const body = fs.readFileSync(path.join(ROOT, 'templates/COMPACT_PROMPT.md'), 'utf8')
-    .replace('# Compact Prompt', '# Compact Handoff Draft')
-    + `\n\n## Current Notes\n\n${note}\n`;
+  const body = buildSmartCompactHandoff(project, note);
   if (flags.apply) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, body);
   }
   console.log(`${flags.apply ? 'wrote' : 'would write'} ${outRel}`);
   console.log('Use this as the compact summary before continuing in a fresh/compacted context.');
+}
+
+function buildCompiledContext(project, flags = {}) {
+  const now = new Date().toISOString();
+  const r = audit(project, { quiet: true });
+  const budget = computeBudget(project, { brief: true });
+  const contextIndex = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CONTEXT_INDEX.md')), { maxLines: 12 });
+  const currentState = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CURRENT_STATE.md')), { maxLines: 18 });
+  const worklogFacts = extractRecentFactsFromMarkdown(readTextIfExists(path.join(project, 'docs/WORKLOG.md')), { maxFacts: 10 });
+  const journalFacts = extractRecentFactsFromMarkdown(readTextIfExists(path.join(project, 'docs/CONTEXT_JOURNAL.md')), { maxFacts: 8 });
+  const graphiti = graphitiRowsForProject(project, 6);
+  const facts = [...worklogFacts, ...journalFacts].slice(-14);
+  const touched = [...new Set(facts.flatMap((fact) => fact.files || []))].slice(0, 18);
+  const next = [...new Set(facts.map((fact) => fact.next).filter(Boolean))].slice(-6);
+  return {
+    project,
+    generatedAt: now,
+    audit: {
+      hotContextLines: r.hotContextLines,
+      broadContextLines: r.broadContextLines,
+      risks: r.risks,
+    },
+    budget: {
+      beforeLines: budget.beforeLines,
+      afterLines: budget.afterLines,
+      savedTokens: budget.savedTokens,
+      savedPct: budget.savedPct,
+    },
+    currentTruth: currentState.length ? currentState : contextIndex,
+    recentFacts: facts,
+    touchedFiles: touched,
+    next,
+    memory: graphiti,
+  };
+}
+
+function formatCompiledContext(compiled) {
+  const lines = [
+    '# Compiled Context',
+    '',
+    `Generated: ${compiled.generatedAt}`,
+    `Project: ${compiled.project}`,
+    '',
+    '## Why This Exists',
+    '',
+    'This is the compact compiled layer: raw worklogs/journals stay available, but future agents should start from current truth and recent durable facts instead of reading append-only history.',
+    '',
+    '## Current Truth',
+    '',
+    ...(compiled.currentTruth.length ? compiled.currentTruth : ['- No current truth found.']),
+    '',
+    '## Recent Durable Facts',
+    '',
+    ...(compiled.recentFacts.length
+      ? compiled.recentFacts.map((fact) => `- ${fact.fact}`)
+      : ['- No recent facts compiled.']),
+    '',
+    '## Touched Files',
+    '',
+    ...(compiled.touchedFiles.length ? compiled.touchedFiles.map((file) => `- ${file}`) : ['- No touched files compiled.']),
+    '',
+    '## Next / Open Loops',
+    '',
+    ...(compiled.next.length ? compiled.next.map((item) => `- ${item}`) : ['- No open loops compiled.']),
+    '',
+    '## Memory Rows',
+    '',
+    ...(compiled.memory.length ? compiled.memory : ['- No matching Graphiti rows found.']),
+    '',
+    '## Context Budget',
+    '',
+    `- hot context: ${compiled.audit.hotContextLines} lines`,
+    `- broad context: ${compiled.audit.broadContextLines} lines`,
+    `- first read: ${compiled.budget.afterLines} lines`,
+    `- not loaded on first pass: ~${compiled.budget.savedTokens} tokens (${compiled.budget.savedPct}% less)`,
+    `- risks: ${compiled.audit.risks.join(', ') || 'none'}`,
+    '',
+    '## Rules',
+    '',
+    '- Treat this as a compiled entrypoint, not full product truth.',
+    '- Expand through `larp pack`, `larp repo-map`, exact search, then touched files.',
+    '- Read archived/raw worklog only for contradiction resolution or missing evidence.',
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function compileMemory(project, flags = {}) {
+  const compiled = buildCompiledContext(project, flags);
+  const text = formatCompiledContext(compiled);
+  const outRel = flags.file || 'docs/COMPILED_CONTEXT.md';
+  const out = path.join(project, outRel);
+  if (flags.apply) {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, text);
+  }
+  if (flags.json) console.log(JSON.stringify({ ...compiled, file: outRel, wrote: Boolean(flags.apply) }, null, 2));
+  else {
+    console.log(`${flags.apply ? 'wrote' : 'would write'} ${outRel}`);
+    console.log(`facts: ${compiled.recentFacts.length}`);
+    console.log(`touched files: ${compiled.touchedFiles.length}`);
+    console.log(`first read: ${compiled.budget.afterLines} lines; saved ~${compiled.budget.savedTokens} tokens`);
+    if (!flags.apply) console.log('dry-run: use --apply to write compiled context');
+  }
+  return compiled;
+}
+
+function workflowStatus(project, flags = {}) {
+  const r = audit(project, { quiet: true });
+  const packResult = buildGather(project, { task: flags.task || flags.query || 'workflow status' }, r);
+  const guard = buildToolGuard(project, flags);
+  const compiledExists = fs.existsSync(path.join(project, 'docs/COMPILED_CONTEXT.md'));
+  const journalExists = fs.existsSync(path.join(project, 'docs/CONTEXT_JOURNAL.md'));
+  const worklogExists = fs.existsSync(path.join(project, 'docs/WORKLOG.md'));
+  const result = {
+    project,
+    state: {
+      audit: r.risks.length ? 'warning' : 'ok',
+      pack: packResult.recommendedContextPack.length ? 'ready' : 'missing',
+      worklog: worklogExists ? 'ready' : 'missing',
+      journal: journalExists ? 'ready' : 'missing',
+      compile: compiledExists ? 'ready' : 'missing',
+      guard: guard.pressureLevel,
+    },
+    workflow: [
+      'audit',
+      'pack',
+      'repo-map',
+      'tool-guard',
+      'work',
+      'finish',
+      'verify',
+      'compile-memory',
+    ],
+    next: compiledExists
+      ? [`${commandName()} pack ${quotePath(project)} --task "..."`]
+      : [`${commandName()} compile-memory ${quotePath(project)} --apply`],
+    risks: r.risks,
+  };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# workflow status\n`);
+    console.log(`project: ${path.basename(project)}`);
+    for (const [key, value] of Object.entries(result.state)) console.log(`- ${key}: ${value}`);
+    console.log(`\nworkflow: ${result.workflow.join(' -> ')}`);
+    console.log(`\nnext:`);
+    for (const item of result.next) console.log(`- ${item}`);
+  }
+  return result;
+}
+
+function automationPlan(project, flags = {}) {
+  const r = audit(project, { quiet: true });
+  const result = {
+    project,
+    mode: 'guarded-plan',
+    principles: [
+      'Never auto-delete or auto-prune without explicit apply.',
+      'Run scheduled audit/recommend/token-burn/digest safely.',
+      'Trigger pressure compact from host signals when available.',
+      'Keep raw logs in .larpkeeper/runs and show compressed summaries.',
+    ],
+    automations: [
+      { name: 'scheduled-maintenance', command: `${commandName()} audit ${quotePath(project)} && ${commandName()} recommend ${quotePath(project)}`, writes: false },
+      { name: 'pressure-check', command: `${commandName()} pressure ${quotePath(project)} --brief`, writes: false },
+      { name: 'smart-compact', command: `${commandName()} compact-chat ${quotePath(project)} --apply`, writes: true, guard: 'only when pressure or hot context threshold is exceeded' },
+      { name: 'memory-compile', command: `${commandName()} compile-memory ${quotePath(project)} --apply`, writes: true, guard: 'after meaningful finish/worklog entries' },
+      { name: 'prune-plan', command: `${commandName()} prune ${quotePath(project)} --json`, writes: false },
+    ],
+    currentPressure: {
+      hotContextLines: r.hotContextLines,
+      risks: r.risks,
+    },
+  };
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# automation plan\n`);
+    console.log(`project: ${path.basename(project)}`);
+    console.log(`mode: ${result.mode}`);
+    console.log(`\nprinciples:`);
+    for (const item of result.principles) console.log(`- ${item}`);
+    console.log(`\nautomations:`);
+    for (const item of result.automations) {
+      console.log(`- ${item.name}: ${item.command}`);
+      if (item.guard) console.log(`  guard: ${item.guard}`);
+    }
+  }
+  return result;
+}
+
+function readTextIfExists(file) {
+  try {
+    if (!fs.existsSync(file)) return '';
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function compactLinesFromMarkdown(text, opts = {}) {
+  const maxLines = opts.maxLines || 24;
+  const keepHeadings = opts.keepHeadings !== false;
+  const lines = String(text || '').split(/\r?\n/);
+  const out = [];
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line.trim()) continue;
+    if (/^#{1,4}\s+/.test(line)) {
+      if (keepHeadings) out.push(line.replace(/^#{1,4}\s+/, '### '));
+      continue;
+    }
+    if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
+      out.push(line.length > 220 ? `${line.slice(0, 217)}...` : line);
+      continue;
+    }
+    if (/^(Result|Done|Next|Evidence|Files|Tests|Deploy|Warning|Preference|Source):/i.test(line)) {
+      out.push(line.length > 220 ? `${line.slice(0, 217)}...` : line);
+      continue;
+    }
+    if (out.length < 6 && line.length < 180) out.push(line);
+    if (out.length >= maxLines) break;
+  }
+  return out.slice(0, maxLines);
+}
+
+function extractRecentFactsFromMarkdown(text, opts = {}) {
+  const maxFacts = opts.maxFacts || 12;
+  const parts = String(text || '').split(/\n(?=###\s+)/).filter((part) => part.trim());
+  const facts = [];
+  for (const entry of parts.slice(-30)) {
+    const heading = entry.match(/^###\s+(.+)$/m)?.[1]?.trim();
+    const result = entry.match(/^(?:Result|Done|Preference):\s*(.+)$/im)?.[1]?.trim();
+    const next = entry.match(/^Next:\s*(.+)$/im)?.[1]?.trim();
+    const evidence = entry.match(/^Evidence:\s*([\s\S]*?)(?:\n###|\n[A-Z][A-Za-z ]+:\s|\s*$)/m)?.[1]?.trim();
+    const files = [...entry.matchAll(/^-\s+([^\n]+)$/gm)]
+      .map((m) => m[1].trim())
+      .filter((line) => /^(src|docs|scripts|bin|profiles|test|apps|packages)\//.test(line))
+      .slice(0, 5);
+    const textLine = result || next || heading;
+    if (!textLine) continue;
+    facts.push({
+      heading: heading || 'entry',
+      fact: textLine.length > 260 ? `${textLine.slice(0, 257)}...` : textLine,
+      next: next && next !== textLine ? next.slice(0, 220) : null,
+      evidence: evidence ? evidence.split(/\n/).map((line) => line.replace(/^-\s*/, '').trim()).filter(Boolean).slice(0, 3) : [],
+      files,
+    });
+  }
+  return facts.slice(-maxFacts);
+}
+
+function tailMarkdownEntries(text, maxEntries = 4) {
+  const parts = String(text || '').split(/\n(?=###\s+)/).filter((part) => part.trim());
+  return parts.slice(-maxEntries).flatMap((entry) => compactLinesFromMarkdown(entry, { maxLines: 10 })).slice(0, maxEntries * 10);
+}
+
+function graphitiRowsForProject(project, maxRows = 5) {
+  const file = path.join(os.homedir(), '.hermes/graphiti/context_notes.jsonl');
+  if (!fs.existsSync(file)) return [];
+  const base = path.basename(project).toLowerCase();
+  const aliases = new Set([base]);
+  if (base === 'metis') aliases.add('metis');
+  const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean);
+  const rows = [];
+  for (const line of lines) {
+    try {
+      const row = JSON.parse(line);
+      const projects = Array.isArray(row.projects) ? row.projects : row.project ? [row.project] : [];
+      const hay = `${row.project || ''} ${projects.join(' ')} ${row.title || ''}`.toLowerCase();
+      if ([...aliases].some((alias) => hay.includes(alias))) rows.push(row);
+    } catch {
+      // Skip malformed durable memory rows.
+    }
+  }
+  return rows.slice(-maxRows).map((row) => {
+    const title = row.title || row.kind || row.maintenance_type || 'context note';
+    const content = String(row.content || row.note || '').replace(/\s+/g, ' ').trim();
+    const short = content.length > 220 ? `${content.slice(0, 217)}...` : content;
+    return `- ${title}: ${short}`;
+  });
+}
+
+function buildSmartCompactHandoff(project, note) {
+  const now = new Date().toISOString();
+  const r = audit(project, { quiet: true });
+  const budget = computeBudget(project, { brief: true });
+  let tokenBurn = null;
+  try {
+    const tmp = spawnSync(process.execPath, [process.argv[1], 'token-burn', project, '--since', 'today', '--json'], {
+      cwd: project,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 10,
+    });
+    if (tmp.status === 0 && tmp.stdout.trim()) tokenBurn = JSON.parse(tmp.stdout);
+  } catch {
+    tokenBurn = null;
+  }
+
+  const contextIndex = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CONTEXT_INDEX.md')), { maxLines: 18 });
+  const currentState = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CURRENT_STATE.md')), { maxLines: 28 });
+  const decisions = tailMarkdownEntries(readTextIfExists(path.join(project, 'docs/DECISIONS.md')), 3);
+  const worklog = tailMarkdownEntries(readTextIfExists(path.join(project, 'docs/WORKLOG.md')), 5);
+  const journal = tailMarkdownEntries(readTextIfExists(path.join(project, 'docs/CONTEXT_JOURNAL.md')), 5);
+  const graphiti = graphitiRowsForProject(project, 6);
+  const reduceCandidates = (budget.reduceCandidates || []).slice(0, 8).map((f) => `- ${f.path} (${f.lines} lines)`);
+  const tokenTargets = (tokenBurn?.topTargets || []).slice(0, 5).map((t) => `- ${t.target}: ~${t.estimatedTokens} tokens`);
+  const recommendations = (tokenBurn?.recommendations || []).slice(0, 4).map((x) => `- ${x}`);
+
+  return [
+    '# Compact Handoff',
+    '',
+    `Generated: ${now}`,
+    `Project: ${project}`,
+    '',
+    '## Goal',
+    '',
+    note,
+    '',
+    '## Current Truth',
+    '',
+    ...(currentState.length ? currentState : contextIndex.length ? contextIndex : ['- No current-state docs found. Read runtime code plus touched files.']),
+    '',
+    '## Recent Worklog',
+    '',
+    ...(worklog.length ? worklog : ['- No recent worklog entries found.']),
+    '',
+    '## Recent Context Journal',
+    '',
+    ...(journal.length ? journal : ['- No recent context journal entries found.']),
+    '',
+    '## Decisions',
+    '',
+    ...(decisions.length ? decisions : ['- No recent decisions found.']),
+    '',
+    '## Memory',
+    '',
+    ...(graphiti.length ? graphiti : ['- No matching Graphiti context rows found.']),
+    '',
+    '## Context Budget',
+    '',
+    `- broad context: ${r.broadContextLines} lines (~${approxTokensFromLines(r.broadContextLines)} tokens)`,
+    `- hot context: ${r.hotContextLines} lines`,
+    `- default/task pack estimate: ${budget.afterLines} lines (~${budget.afterTokens} tokens)`,
+    `- avoidable tokens: ${budget.savedTokens}`,
+    `- risks: ${(r.risks || []).join(', ') || 'none'}`,
+    '',
+    '## Token Burn',
+    '',
+    tokenBurn
+      ? `- today estimated burn: ${tokenBurn.totals?.estimatedTokens ?? 0} tokens from ${tokenBurn.totals?.rows ?? 0} safe aggregate rows`
+      : '- token-burn unavailable',
+    ...tokenTargets,
+    ...recommendations,
+    '',
+    '## Keep Out Of Default Context',
+    '',
+    ...(reduceCandidates.length ? reduceCandidates : ['- No reduce candidates reported.']),
+    '',
+    '## Next',
+    '',
+    '- Start future work with `larp codex-preflight <project> --task "..."`.',
+    '- Read this compact handoff, `docs/CONTEXT_INDEX.md`, `docs/CURRENT_STATE.md`, then touched files only.',
+    '- Use `larp run` or `larp compress-output` for long command output.',
+    '- Inspect `larp prune --json` candidates before moving heavy docs; do not auto-prune important history.',
+    '',
+    '## Do Not Repeat',
+    '',
+    '- Do not read broad markdown or archive docs before a task pack.',
+    '- Do not paste raw logs, prompts, auth, token, or secret-like content into repo docs, Obsidian, Graphiti, or chat.',
+    '- Do not treat this file as complete product truth; it is a compact continuation surface.',
+    '',
+  ].join('\n');
 }
 
 function appendGraphiti(project, flags) {
@@ -2655,22 +3416,36 @@ function doctor(project, flags = {}) {
   const journalRel = standardPath(project, 'journal');
   const archivePolicy = standardPath(project, 'archivePolicy');
   const checks = [
-    ['no-read-everything', r.hotContextLines <= 800, `hot context ${r.hotContextLines} lines`],
-    ['archive-not-delete', !archivePolicy || fs.existsSync(path.join(project, archivePolicy)), 'archive policy should exist before pruning'],
-    ['clear-source-roles', (contextIndex && fs.existsSync(path.join(project, contextIndex))) || fs.existsSync(path.join(project, 'AGENTS.md')), 'needs routing/index source'],
-    ['handoff-compact', !fs.existsSync(path.join(project, 'handoff.md')) || lineCount(path.join(project, 'handoff.md')) <= 260, 'handoff should stay compact'],
-    ['skills-router-only', r.duplicateEntrySurfaces.length <= 8, `${r.duplicateEntrySurfaces.length} agent entry surfaces`],
-    ['graphiti-safe', true, 'Graphiti writes require explicit --graphiti/--apply'],
-    ['contradiction-surface', r.duplicateTerms && Object.keys(r.duplicateTerms).length < 16, `${Object.keys(r.duplicateTerms || {}).length} repeated-term clusters`],
-    ['migration-contained', !(r.duplicateTerms.migration && r.duplicateTerms.migration.length > 8), 'migration terms should live in migration docs'],
-    ['fast-session-start', !contextIndex || r.missing.includes(contextIndex) === false, `${contextIndex || 'context index'} enables fast startup`],
-    ['journal-present', !journalRel || fs.existsSync(path.join(project, journalRel)), 'journal records context changes'],
-  ].map(([name, ok, detail]) => ({ name, status: ok ? 'pass' : 'warn', detail }));
+    ['no-read-everything', r.hotContextLines <= 800, `hot context ${r.hotContextLines} lines`, 'agents may drag broad docs into every turn', `${commandName()} pack ${quotePath(project)} --task "..."`],
+    ['archive-not-delete', !archivePolicy || fs.existsSync(path.join(project, archivePolicy)), 'archive policy should exist before pruning', 'without archive rules, cleanup can become destructive or inconsistent', `${commandName()} bootstrap ${quotePath(project)} --apply`],
+    ['clear-source-roles', (contextIndex && fs.existsSync(path.join(project, contextIndex))) || fs.existsSync(path.join(project, 'AGENTS.md')), 'needs routing/index source', 'agents need one map that says where current truth lives', `${commandName()} bootstrap ${quotePath(project)} --apply`],
+    ['handoff-compact', !fs.existsSync(path.join(project, 'handoff.md')) || lineCount(path.join(project, 'handoff.md')) <= 260, 'handoff should stay compact', 'long handoffs become raw transcripts and confuse later sessions', `${commandName()} compact-handoff ${quotePath(project)} --file handoff.md --apply`],
+    ['skills-router-only', r.duplicateEntrySurfaces.length <= 8, `${r.duplicateEntrySurfaces.length} agent entry surfaces`, 'too many entry surfaces can create competing instructions', `${commandName()} audit ${quotePath(project)}`],
+    ['graphiti-safe', true, 'Graphiti writes require explicit --graphiti/--apply', 'durable machine memory should stay sourced and intentional', `${commandName()} finish ${quotePath(project)} --apply --graphiti`],
+    ['contradiction-surface', r.duplicateTerms && Object.keys(r.duplicateTerms).length < 16, `${Object.keys(r.duplicateTerms || {}).length} repeated-term clusters`, 'repeated themes across active docs often mean stale plans are mixed with current truth', `${commandName()} conflicts ${quotePath(project)}`],
+    ['migration-contained', !(r.duplicateTerms.migration && r.duplicateTerms.migration.length > 8), 'migration terms should live in migration docs', 'migration notes should not become the default source of current behavior', `${commandName()} prune ${quotePath(project)}`],
+    ['fast-session-start', !contextIndex || r.missing.includes(contextIndex) === false, `${contextIndex || 'context index'} enables fast startup`, 'without an index, every agent has to rediscover the project map', `${commandName()} bootstrap ${quotePath(project)} --apply`],
+    ['journal-present', !journalRel || fs.existsSync(path.join(project, journalRel)), 'journal records context changes', 'without a journal, context edits cannot be audited later', `${commandName()} bootstrap ${quotePath(project)} --apply`],
+  ].map(([name, ok, detail, impact, fix]) => ({ name, status: ok ? 'pass' : 'warn', detail, impact, fix }));
   const result = { project, checks };
   if (flags.json) console.log(JSON.stringify(result, null, 2));
   else {
-    console.log(`# context doctor\n`);
-    for (const c of checks) console.log(`- ${c.status.padEnd(4)} ${c.name}: ${c.detail}`);
+    const warnings = checks.filter((c) => c.status === 'warn');
+    console.log(`${bold('Larpkeeper doctor')} ${dim(`(${path.basename(project)})`)}`);
+    console.log(`health: ${warnings.length ? yellow(`${warnings.length} warnings`) : green('clean')}`);
+    section('Findings');
+    for (const c of checks) {
+      console.log(`- ${c.status.padEnd(4)} ${c.name}: ${c.detail}`);
+      if (c.status === 'warn') {
+        console.log(`  impact: ${c.impact}`);
+        console.log(`  fix: ${c.fix}`);
+      }
+    }
+    if (!warnings.length) {
+      section('Next');
+      console.log(`  ${cyan(`${commandName()} pack ${quotePath(project)} --task "..."`)}`);
+      console.log(`  ${dim('context health is clean; move through task-scoped context instead of broad reading')}`);
+    }
   }
 }
 
@@ -2722,6 +3497,9 @@ async function main() {
   else if (cmd === 'banner') banner(project, flags);
   else if (cmd === 'codex') launchCodex(project, flags);
   else if (cmd === 'compact-chat') compactChat(project, flags);
+  else if (cmd === 'compile-memory') compileMemory(project, flags);
+  else if (cmd === 'workflow-status') workflowStatus(project, flags);
+  else if (cmd === 'automation-plan') automationPlan(project, flags);
   else if (cmd === 'diff-cards') diffCards(project, flags);
   else if (cmd === 'validate') validate(project);
   else throw new Error(`unknown command: ${cmd}`);

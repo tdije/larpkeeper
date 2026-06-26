@@ -7,6 +7,10 @@ It keeps project memory small, current, and readable: what matters now, what can
 
 - audits context health before broad reading;
 - packs a small profile-aware file set for a task;
+- compiles raw worklogs/journals into a short current-truth layer;
+- maps source code with task ranking, symbols, imports, related tests, and lightweight dependency signals;
+- tracks a durable workflow shape: audit -> pack -> repo-map -> guard -> work -> finish -> verify -> compile;
+- describes safe automation plans for scheduled audits, pressure checks, digest, and compacting;
 - scaffolds, audits, and journals the context files agents should use;
 - adds thin adapters for AGENTS, Claude, and Codex-style runtimes;
 - warns when context is bloated or stale.
@@ -16,12 +20,27 @@ It keeps project memory small, current, and readable: what matters now, what can
 Agent projects tend to collect too many notes, too many rules, and too much old history.
 Larpkeeper turns that into a short operating layer so the next session starts from the right files instead of the whole attic.
 
+## New Agent Layers
+
+Larpkeeper now borrows the useful parts of several proven agent patterns without forcing a project onto a heavy framework:
+
+- **Karpathy-style context compiler**: raw worklogs and journals stay available, while `compile-memory` creates a short `docs/COMPILED_CONTEXT.md` with current truth, recent durable facts, touched files, next steps, memory rows, and budget.
+- **Aider-style repo map v2**: `repo-map` ranks source files by task terms, symbols, size, recency, related tests, imports, and lightweight fan-in signals so agents inspect the right code first.
+- **LangGraph-style durable workflow**: `workflow-status` shows whether the project has audit, pack, worklog, journal, compiled context, and guard state ready for long-running work.
+- **OpenHands-style guarded automation**: `automation-plan` describes scheduled and pressure-triggered automation while keeping destructive actions out of automatic paths.
+
+These commands are report-only by default. Commands that write files require `--apply`.
+
 ## Quick Start
 
 ```bash
 larp audit /path/to/project
 larp recommend /path/to/project
 larp pack /path/to/project --task "fix webapp"
+larp repo-map /path/to/project --task "fix webapp"
+larp compile-memory /path/to/project --apply
+larp workflow-status /path/to/project
+larp automation-plan /path/to/project
 ```
 
 For setup:
@@ -78,6 +97,10 @@ larp pack /path/to/project --task "..."
 larp prune /path/to/project
 larp doctor /path/to/project
 larp pressure /path/to/project --brief
+larp repo-map /path/to/project --task "..."
+larp compile-memory /path/to/project --apply
+larp workflow-status /path/to/project
+larp automation-plan /path/to/project
 larp setup /path/to/project --apply
 larp bootstrap /path/to/project --apply
 larp journal /path/to/project --type session --note "..." --apply
@@ -94,8 +117,58 @@ Aliases:
 - current state and worklog files
 - journal and archive policy scaffolding
 - source ranking and budget reports
+- compiled context cards
+- repo-map v2 with symbols/imports/tests/signals
+- durable workflow status reports
+- guarded automation plans
 - zsh statusline hook
 - Codex / Claude / AGENTS adapters
+
+## Command Highlights
+
+### `compile-memory`
+
+Turns append-only operational history into a compact compiled layer:
+
+```bash
+larp compile-memory . --apply
+```
+
+Writes `docs/COMPILED_CONTEXT.md` with current truth, recent durable facts, touched files, next/open loops, memory rows, and context budget. Full raw worklogs remain in the repo or archive; the compiled file is the lightweight starting point for future agents.
+
+### `repo-map`
+
+Builds a task-focused map of source files:
+
+```bash
+larp repo-map . --task "fix publishing channel routing"
+```
+
+The map includes paths, line counts, symbols, imports, related tests, and signals such as recent/small/imported-by. It is meant to replace broad source dumps before coding.
+
+### `workflow-status`
+
+Shows whether the durable work loop is ready:
+
+```bash
+larp workflow-status .
+```
+
+Expected loop:
+
+```text
+audit -> pack -> repo-map -> tool-guard -> work -> finish -> verify -> compile-memory
+```
+
+### `automation-plan`
+
+Shows the safe automation design for a project:
+
+```bash
+larp automation-plan .
+```
+
+The plan separates read-only maintenance from guarded write steps. It should never auto-delete or auto-prune without explicit human approval.
 
 When a project has a task completion hook such as `scripts/task-done.sh`, use it after meaningful completed work to keep repo worklog, Obsidian, and Graphiti aligned. Write simple structured entries: what was done, what became better, evidence/tests, deploy status, decisions/blockers, and next step. For a Russian-speaking owner, write worklogs and user-facing reports in Russian unless asked otherwise.
 
