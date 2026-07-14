@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 const root = path.resolve(new URL('..', import.meta.url).pathname);
 const cli = path.join(root, 'bin/context-gardener.mjs');
@@ -20,6 +20,14 @@ function write(file, lines = 1) {
 
 function run(args, cwd = root) {
   return execFileSync(process.execPath, [cli, ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, LARPK_NO_UPDATE_CHECK: '1' },
+  });
+}
+
+function runResult(args, cwd = root) {
+  return spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: 'utf8',
     env: { ...process.env, LARPK_NO_UPDATE_CHECK: '1' },
@@ -158,6 +166,25 @@ test('empty generic project does not report fake 100 percent savings', () => {
   assert.equal(out.savedPct, 0);
 });
 
+test('audit budget and prune share default-start semantics without scoped docs', () => {
+  const project = tmpProject('Metis');
+  write(path.join(project, 'README.md'), 5);
+  write(path.join(project, 'PRODUCT.md'), 10);
+  write(path.join(project, 'DESIGN.md'), 120);
+
+  const audit = JSON.parse(run(['audit', project, '--json']));
+  const budget = JSON.parse(run(['budget', project, '--json']));
+  const prune = JSON.parse(run(['prune', project, '--json']));
+  const gather = JSON.parse(run(['gather', project, '--json']));
+
+  assert.equal(audit.defaultStart.afterLines, budget.afterLines);
+  assert.equal(prune.budget.afterLines, budget.afterLines);
+  assert.deepEqual(audit.defaultStart.readPack, budget.readPack);
+  assert.deepEqual(gather.scopedRead, []);
+  assert.equal(budget.readPack.includes('DESIGN.md'), false);
+  assert.equal(prune.budget.readPack.includes('DESIGN.md'), false);
+});
+
 test('brief outputs are defined and compact', () => {
   const project = tmpProject('Brief');
   write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
@@ -227,6 +254,19 @@ test('repo-map returns compact task-focused source symbols', () => {
   assert.ok(out.estimatedTokens <= out.budgetTokens);
 });
 
+test('repo-map deduplicates related test paths', () => {
+  const project = tmpProject('RepoMapDedup');
+  fs.mkdirSync(path.join(project, 'lib'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'lib/tool.js'), 'export function usefulTool() { return true; }\n');
+  fs.writeFileSync(path.join(project, 'lib/tool.test.js'), 'import { usefulTool } from "./tool.js";\n');
+
+  const out = JSON.parse(run(['repo-map', project, '--task', 'useful tool', '--json', '--no-cache']));
+  const source = out.includedFiles.find((file) => file.path === 'lib/tool.js');
+
+  assert.ok(source);
+  assert.deepEqual(source.relatedTests, ['lib/tool.test.js']);
+});
+
 test('tool-guard gives compact limits for broad work', () => {
   const project = tmpProject('ToolGuard');
   write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
@@ -292,6 +332,108 @@ test('run wrapper stores raw output and returns compressed summary', () => {
   assert.ok(fs.existsSync(path.join(project, out.stdoutFile)));
   assert.ok(out.summary.errorLines.some((line) => line.includes('wrapped boom')));
   assert.ok(out.summary.topFiles.some((row) => row.file === 'src/app.ts'));
+});
+
+test('runs-prune is a read-only dry-run and applies only old run artifacts', () => {
+  const project = tmpProject('RunRetention');
+  const runs = path.join(project, '.larpkeeper/runs');
+  fs.mkdirSync(runs, { recursive: true });
+  const old = path.join(runs, 'run-old.stdout.log');
+  const oldMeta = path.join(runs, 'run-old.json');
+  const recent = path.join(runs, 'run-recent.stdout.log');
+  const mixedOld = path.join(runs, 'run-mixed.stdout.log');
+  const mixedFresh = path.join(runs, 'run-mixed.json');
+  const unrelated = path.join(runs, 'notes.txt');
+  for (const file of [old, oldMeta, recent, mixedOld, mixedFresh, unrelated]) fs.writeFileSync(file, 'artifact');
+  const oldTime = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
+  fs.utimesSync(old, oldTime, oldTime);
+  fs.utimesSync(oldMeta, oldTime, oldTime);
+  fs.utimesSync(mixedOld, oldTime, oldTime);
+  const dry = JSON.parse(run(['runs-prune', project, '--keep-days', '1', '--keep-last', '1', '--json']));
+  assert.equal(dry.mode, 'dry-run');
+  assert.equal(dry.candidateCount, 2);
+  assert.equal(dry.removed.length, 0);
+  assert.equal(fs.existsSync(old), true);
+  assert.equal(fs.existsSync(unrelated), true);
+  const applied = JSON.parse(run(['runs-prune', project, '--keep-days', '1', '--keep-last', '1', '--apply', '--json']));
+  assert.equal(applied.mode, 'apply');
+  assert.equal(applied.removed.length, 2);
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(oldMeta), false);
+  assert.equal(fs.existsSync(recent), true);
+  assert.equal(fs.existsSync(mixedOld), true);
+  assert.equal(fs.existsSync(mixedFresh), true);
+  assert.equal(fs.existsSync(unrelated), true);
+});
+
+test('prune plan exposes categories and honest projected target status', () => {
+  const project = tmpProject('PruneMetadata');
+  write(path.join(project, 'README.md'), 5);
+  write(path.join(project, 'PRODUCT.md'), 5);
+  write(path.join(project, 'docs/LARGE.md'), 500);
+  write(path.join(project, 'docs/archive/OLD.md'), 700);
+  write(path.join(project, '.agents/skills/example/SKILL.md'), 700);
+  const out = JSON.parse(run(['prune', project, '--target-lines', '100', '--json']));
+  assert.ok(['above-target', 'on-target'].includes(out.status));
+  assert.equal(typeof out.projectedRemaining, 'number');
+  assert.ok(out.actions.every((a) => ['default-read', 'hot-active', 'task-scoped'].includes(a.category)));
+  assert.ok(out.actions.every((a) => typeof a.currentLines === 'number' && typeof a.projectedSavings === 'number' && typeof a.projectedRemaining === 'number'));
+  assert.equal(out.excluded.some((a) => a.category === 'archive'), true);
+  assert.equal(out.excluded.some((a) => a.category === 'agent-skill'), true);
+
+  const scopedProject = tmpProject('Metis');
+  write(path.join(scopedProject, 'README.md'), 5);
+  write(path.join(scopedProject, 'PRODUCT.md'), 5);
+  write(path.join(scopedProject, 'DESIGN.md'), 500);
+  const scoped = JSON.parse(run(['prune', scopedProject, '--json']));
+  const scopedAction = scoped.actions.find((action) => action.path === 'DESIGN.md');
+  assert.equal(scopedAction?.category, 'task-scoped');
+  assert.equal(scopedAction?.action, 'summarize-or-index-task-scoped-doc');
+
+  const entryProject = tmpProject('PruneEntries');
+  write(path.join(entryProject, 'AGENTS.md'), 501);
+  write(path.join(entryProject, 'CLAUDE.md'), 501);
+  const entries = JSON.parse(run(['prune', entryProject, '--target-lines', '100', '--json']));
+  assert.equal(entries.actions.filter((action) => action.action === 'dedupe-agent-entry-surfaces').length, 1);
+  assert.equal(entries.actions.some((action) => action.path === 'AGENTS.md' || action.path === 'CLAUDE.md'), false);
+  assert.equal(entries.projectedRemaining, 501);
+
+  const overlapProject = tmpProject('PruneOverlap');
+  fs.mkdirSync(overlapProject, { recursive: true });
+  fs.writeFileSync(path.join(overlapProject, 'larpkeeper.config.json'), JSON.stringify({
+    profile: {
+      id: 'overlap',
+      matchRegex: 'PruneOverlap$',
+      defaultRead: ['docs/LARGE.md'],
+      scoped: [{ match: 'large', read: ['docs/LARGE.md'] }]
+    }
+  }, null, 2));
+  write(path.join(overlapProject, 'docs/LARGE.md'), 500);
+  const overlap = JSON.parse(run(['prune', overlapProject, '--json']));
+  const overlapAction = overlap.actions.find((action) => action.path === 'docs/LARGE.md');
+  assert.equal(overlapAction?.category, 'default-read');
+  assert.equal(overlapAction?.action, 'summarize-or-index-authoritative-doc');
+  assert.match(overlapAction?.reason || '', /default profile read/);
+});
+
+test('conflicts separates duplication hints from semantic consistency hints', () => {
+  const project = tmpProject('ConflictStructure');
+  for (let i = 0; i < 5; i++) write(path.join(project, `docs/note-${i}.md`), 2);
+  for (let i = 0; i < 5; i++) fs.appendFileSync(path.join(project, `docs/note-${i}.md`), '\ngraphiti graphiti');
+  write(path.join(project, 'CLAUDE.md'), 2);
+  const legacy = JSON.parse(run(['conflicts', project, '--json']));
+  assert.ok(Array.isArray(legacy));
+  assert.ok(legacy.some((hint) => hint.type === 'repeated-instruction'));
+
+  const out = JSON.parse(run(['conflicts', project, '--json', '--structured']));
+  assert.ok(Array.isArray(out.duplicationHints));
+  assert.ok(Array.isArray(out.consistencyHints));
+  assert.ok(Array.isArray(out.semanticConflicts));
+  assert.ok(Array.isArray(out.hints));
+  assert.ok(out.duplicationHints.some((hint) => hint.term === 'graphiti'));
+  assert.equal(out.semanticConflicts.some((hint) => hint.type === 'repeated-term'), false);
+  assert.equal(out.semanticConflicts.length, 0);
+  assert.ok(out.consistencyHints.some((hint) => hint.type === 'possibly-stale-entry' && hint.confidence));
 });
 
 test('token-burn reads only safe sqlite aggregates', () => {
@@ -424,10 +566,92 @@ test('workflow-status and automation-plan expose guarded durable workflow', () =
   assert.ok(plan.principles.some((item) => item.includes('Never auto-delete')));
 });
 
+test('workflow-status reports missing fresh and stale compiled context', () => {
+  const project = tmpProject('WorkflowFreshness');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 3);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 3);
+  write(path.join(project, 'docs/WORKLOG.md'), 3);
+  write(path.join(project, 'docs/CONTEXT_JOURNAL.md'), 3);
+
+  const missing = JSON.parse(run(['workflow-status', project, '--json']));
+  assert.equal(missing.state.compile, 'missing');
+  assert.match(missing.next[0], /compile-memory .* --apply/);
+
+  run(['compile-memory', project, '--apply', '--json']);
+  const fresh = JSON.parse(run(['workflow-status', project, '--json']));
+  assert.equal(fresh.state.compile, 'fresh');
+  assert.ok(fresh.compileFreshness.compiledAt);
+  assert.match(fresh.next[0], /pack .* --task/);
+
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(path.join(project, 'docs/CURRENT_STATE.md'), future, future);
+  const stale = JSON.parse(run(['workflow-status', project, '--json']));
+  assert.equal(stale.state.compile, 'stale');
+  assert.equal(stale.compileFreshness.newestSource, 'docs/CURRENT_STATE.md');
+  assert.match(stale.compileFreshness.reason, /newer than/);
+  assert.match(stale.next[0], /compile-memory .* --apply/);
+});
+
+test('compile-memory and freshness follow profile-specific standard files', () => {
+  const project = tmpProject('DripTech Studio AI');
+  write(path.join(project, 'AGENTS.md'), 3);
+  write(path.join(project, 'docs/AGENT_OPERATING_COMPACT.md'), 3);
+  fs.writeFileSync(path.join(project, 'docs/KNOWLEDGE_MAP.md'), '# Knowledge Map\n\n- Profile index\n');
+  fs.writeFileSync(path.join(project, 'docs/CURRENT_STATE.md'), '# Current State\n\n- Profile current truth\n');
+  fs.writeFileSync(path.join(project, 'docs/DAILY_WORKLOG.md'), '### 2026-07-14 - Profile work\n\nResult: Read alternate daily worklog\n');
+
+  const compiledResult = JSON.parse(run(['compile-memory', project, '--apply', '--json']));
+  const compiled = fs.readFileSync(path.join(project, 'docs/COMPILED_CONTEXT.md'), 'utf8');
+
+  assert.equal(compiledResult.recentFacts.length, 1);
+  assert.match(compiled, /Read alternate daily worklog/);
+
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(path.join(project, 'docs/DAILY_WORKLOG.md'), future, future);
+  const stale = JSON.parse(run(['workflow-status', project, '--json']));
+
+  assert.equal(stale.state.compile, 'stale');
+  assert.equal(stale.state.worklog, 'ready');
+  assert.equal(stale.state.journal, 'not-configured');
+  assert.equal(stale.compileFreshness.newestSource, 'docs/DAILY_WORKLOG.md');
+  assert.equal(stale.compileFreshness.sources.some((source) => source.path === 'docs/CONTEXT_JOURNAL.md'), false);
+});
+
 test('repo validate succeeds once self-dogfood docs and profiles exist', () => {
   const out = run(['validate', '.']).trim();
 
   assert.match(out, /context validation: ok/);
+});
+
+test('validate warning reports limits contributors and recommended command', () => {
+  const project = tmpProject('ValidateWarning');
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 900);
+
+  const result = runResult(['validate', project]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /context validation: warning/);
+  assert.match(result.stdout, /hot context: actual 900 lines; target <= 800 lines/);
+  assert.match(result.stdout, /default start: actual \d+ lines; target <= 500 lines/);
+  assert.match(result.stdout, /top contributors: docs\/CURRENT_STATE\.md \(900 lines\)/);
+  assert.match(result.stdout, /recommended command: .*(bootstrap|prune)/);
+});
+
+test('validate warns when aggregate hot context exceeds target without large files', () => {
+  const project = tmpProject('ValidateAggregateHot');
+  write(path.join(project, 'docs/CONTEXT_INDEX.md'), 300);
+  write(path.join(project, 'docs/CURRENT_STATE.md'), 300);
+  write(path.join(project, 'docs/WORKLOG.md'), 300);
+  write(path.join(project, 'docs/DECISIONS.md'), 3);
+  write(path.join(project, 'docs/CONTEXT_JOURNAL.md'), 300);
+  write(path.join(project, 'docs/archive/context-heavy/README.md'), 3);
+
+  const audit = JSON.parse(run(['audit', project, '--json']));
+  const result = runResult(['validate', project]);
+
+  assert.deepEqual(audit.risks, ['hot-context-over-budget']);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /hot context: actual 1200 lines; target <= 800 lines/);
 });
 
 test('bundled profiles match the declared schema shape', () => {

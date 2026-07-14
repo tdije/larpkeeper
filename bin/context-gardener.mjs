@@ -130,26 +130,19 @@ function auditLevel(r) {
 }
 
 function estimateAuditSavings(r, project) {
-  const profile = profileFor(project);
-  const readPack = existing(project, profile.defaultRead).slice(0, 6);
-  const afterLines = readPack.reduce((sum, file) => sum + (file.startsWith('~/') ? 40 : lineCount(path.join(project, file))), 0);
-  const beforeLines = r.broadContextLines || r.hotContextLines || 0;
-  const savedLines = readPack.length ? Math.max(0, beforeLines - afterLines) : 0;
-  const savedPct = beforeLines && readPack.length ? Math.round((savedLines / beforeLines) * 100) : 0;
+  const budget = r.defaultStart || computeBudget(project, { brief: true }, r);
   return {
-    profile: profile.id,
-    beforeLines,
-    afterLines,
-    savedLines,
-    savedPct,
-    beforeTokens: approxTokensFromLines(beforeLines),
-    afterTokens: approxTokensFromLines(afterLines),
-    savedTokens: approxTokensFromLines(savedLines),
-    readPack,
-    confidence: readPack.length ? 'medium' : 'low',
-    confidenceReason: readPack.length
-      ? 'default profile only; run pack/budget with --task or --query for task-specific context'
-      : 'no default read pack exists yet',
+    profile: budget.profile,
+    beforeLines: budget.beforeLines,
+    afterLines: budget.afterLines,
+    savedLines: budget.savedLines,
+    savedPct: budget.savedPct,
+    beforeTokens: budget.beforeTokens,
+    afterTokens: budget.afterTokens,
+    savedTokens: budget.savedTokens,
+    readPack: budget.readPack,
+    confidence: budget.confidence,
+    confidenceReason: budget.confidenceReason,
   };
 }
 
@@ -194,6 +187,7 @@ Usage:
   ${bin} install-adapter <project> --target agents|claude [--owner-name NAME] [--apply]   drop the adapter
   ${bin} pack <project> [--task "..."] [--json]        read now
   ${bin} prune <project> [--json]        cut noise
+  ${bin} runs-prune <project> [--keep-days N] [--keep-last N] [--apply] [--json]   retain run artifacts
   ${bin} maintain <project> [--apply]    safe maintenance pass
   ${bin} fix-safe <project> [--apply]    safe maintenance alias
   ${bin} recommend <project> [--json]    next best move
@@ -205,7 +199,7 @@ Usage:
   ${bin} score <project> [--json]        rank the noise
   ${bin} doctor <project> [--json]       check the health
   ${bin} budget <project> [--query "..."] [--target-lines 500] [--json]   count the burn
-  ${bin} conflicts <project> [--json]    catch the contradictions
+  ${bin} conflicts <project> [--json] [--structured]    separate conflicts, consistency, and duplication hints
   ${bin} blindspots <project> [--type frontend|backend|deploy|pricing|memory|release] [--json]   what did we miss?
   ${bin} finish <project> --done "..." --next "..." [--evidence "..."] [--apply] [--graphiti]   close the loop
   ${bin} policy
@@ -1053,7 +1047,7 @@ function relatedTestFiles(project, sourcePath) {
     sourcePath.replace(/\/src\//, '/test/').replace(ext, `.test${ext}`),
     sourcePath.replace(/\/src\//, '/tests/').replace(ext, `.test${ext}`),
   ];
-  return candidates.filter((f) => fs.existsSync(path.join(project, f))).slice(0, 4);
+  return [...new Set(candidates)].filter((f) => fs.existsSync(path.join(project, f))).slice(0, 4);
 }
 
 function sourceModuleKey(sourcePath) {
@@ -1413,6 +1407,105 @@ function runWrapped(project, flags = {}) {
   }
   process.exitCode = result.status ?? (result.signal ? 1 : 0);
   return meta;
+}
+
+const RUN_RETENTION_DEFAULTS = Object.freeze({ keepDays: 14, keepLast: 20 });
+
+function runArtifacts(project) {
+  const runsDir = path.join(project, '.larpkeeper', 'runs');
+  if (!fs.existsSync(runsDir)) return { runsDir, files: [] };
+  const files = [];
+  const walk = (dir) => {
+    for (const name of fs.readdirSync(dir)) {
+      const abs = path.join(dir, name);
+      let stat;
+      try { stat = fs.lstatSync(abs); } catch { continue; }
+      if (stat.isDirectory()) walk(abs);
+      else if (stat.isFile() && name.startsWith('run-')) files.push({ abs, stat });
+    }
+  };
+  walk(runsDir);
+  return { runsDir, files: files.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs || a.abs.localeCompare(b.abs)) };
+}
+
+function runsPrune(project, flags = {}) {
+  const keepDaysRaw = Number(flags['keep-days'] ?? flags.keepDays ?? RUN_RETENTION_DEFAULTS.keepDays);
+  const keepLastRaw = Number(flags['keep-last'] ?? flags.keepLast ?? RUN_RETENTION_DEFAULTS.keepLast);
+  if (!Number.isFinite(keepDaysRaw) || keepDaysRaw < 0) throw new Error('--keep-days must be a non-negative number');
+  if (!Number.isFinite(keepLastRaw) || keepLastRaw < 0) throw new Error('--keep-last must be a non-negative number');
+  const keepDays = Math.floor(keepDaysRaw);
+  const keepLast = Math.floor(keepLastRaw);
+  const now = Date.now();
+  const cutoff = now - keepDays * 24 * 60 * 60 * 1000;
+  const { runsDir, files } = runArtifacts(project);
+  const groups = new Map();
+  for (const item of files) {
+    const name = path.basename(item.abs);
+    const runId = (name.match(/^(run-[^.]+)/) || [name])[1];
+    const row = groups.get(runId) || { runId, files: [], newestMtime: 0 };
+    row.files.push(item);
+    row.newestMtime = Math.max(row.newestMtime, item.stat.mtimeMs);
+    groups.set(runId, row);
+  }
+  const orderedGroups = [...groups.values()].sort((a, b) => b.newestMtime - a.newestMtime || a.runId.localeCompare(b.runId));
+  const keepLastRunIds = new Set(orderedGroups.slice(0, keepLast).map((group) => group.runId));
+  const keepRecentRunIds = new Set(orderedGroups.filter((group) => group.newestMtime >= cutoff).map((group) => group.runId));
+  const keptRunIds = new Set([...keepLastRunIds, ...keepRecentRunIds]);
+  const kept = orderedGroups
+    .filter((group) => keptRunIds.has(group.runId))
+    .flatMap((group) => group.files.map(({ abs, stat }) => ({
+      path: rel(project, abs),
+      bytes: stat.size,
+      mtime: new Date(stat.mtimeMs).toISOString(),
+      reason: keepLastRunIds.has(group.runId) ? 'keep-last' : `newer-than-${keepDays}-days`,
+    })));
+  const candidates = orderedGroups
+    .filter((group) => !keptRunIds.has(group.runId))
+    .flatMap((group) => group.files.map(({ abs, stat }) => ({
+      path: rel(project, abs),
+      bytes: stat.size,
+      mtime: new Date(stat.mtimeMs).toISOString(),
+      reason: `run-group-older-than-${keepDays}-days`,
+    })));
+  const totalBytes = files.reduce((sum, item) => sum + item.stat.size, 0);
+  const candidateBytes = candidates.reduce((sum, item) => sum + item.bytes, 0);
+  const result = {
+    project,
+    runsDir: rel(project, runsDir),
+    mode: flags.apply ? 'apply' : 'dry-run',
+    apply: Boolean(flags.apply),
+    dryRun: !flags.apply,
+    retention: { keepDays, keepLast, cutoff: new Date(cutoff).toISOString(), artifactPrefix: 'run-' },
+    count: files.length,
+    bytes: totalBytes,
+    candidates,
+    candidateCount: candidates.length,
+    candidateBytes,
+    kept,
+    keptCount: kept.length,
+    keptBytes: kept.reduce((sum, item) => sum + item.bytes, 0),
+    runCount: groups.size,
+    keptRunCount: keptRunIds.size,
+    removed: [],
+  };
+  if (flags.apply) {
+    for (const item of candidates) {
+      const abs = path.join(project, item.path);
+      try { fs.unlinkSync(abs); result.removed.push(item); } catch (err) { item.error = err.message; }
+    }
+  }
+  if (flags.json) console.log(JSON.stringify(result, null, 2));
+  else {
+    console.log(`# runs prune\n`);
+    console.log(`mode: ${result.mode}`);
+    console.log(`retention: keep last ${keepLast}, keep newer than ${keepDays} days`);
+    console.log(`artifacts: ${result.count} in ${result.runCount} runs (${result.bytes} bytes)`);
+    console.log(`candidates: ${result.candidateCount} (${result.candidateBytes} bytes)`);
+    if (result.removed.length) console.log(`removed: ${result.removed.length}`);
+    if (!flags.apply) console.log('dry-run: pass --apply to remove only listed run-* artifacts');
+    for (const item of candidates.slice(0, 40)) console.log(`- ${item.path} (${item.bytes} bytes; ${item.reason})`);
+  }
+  return result;
 }
 
 function semanticSearch(project, flags = {}) {
@@ -2059,6 +2152,7 @@ function audit(project, flags = {}) {
     graphiti: graphitiStats(),
     scores: considered.map(sourceScore).sort((a, b) => (b.authority - b.risk) - (a.authority - a.risk)).slice(0, 120),
   };
+  report.defaultStart = computeBudget(project, { brief: true }, report);
   if (!flags.quiet) {
     if (flags.json) console.log(JSON.stringify(report, null, 2));
     else printAudit(report);
@@ -2482,7 +2576,7 @@ function buildGather(project, flags = {}, auditResult = null) {
   const whyIncluded = [];
   for (const file of defaultRead) whyIncluded.push({ path: file, reason: `${p.id} default read` });
   for (const [pattern, files] of p.scoped || []) {
-    if (!query || new RegExp(pattern, 'i').test(query)) {
+    if (query && new RegExp(pattern, 'i').test(query)) {
       for (const file of existing(project, files)) {
         if (!defaultRead.includes(file) && !scopedRead.includes(file)) {
           scopedRead.push(file);
@@ -2580,10 +2674,10 @@ function caveman(project, flags = {}) {
   if (!flags.apply) console.log('dry-run: use --apply to write docs/CAVEMAN_CONTEXT.md');
 }
 
-function computeBudget(project, flags = {}) {
+function computeBudget(project, flags = {}, auditResult = null) {
   const targetLines = Number(flags['target-lines'] || flags.targetLines || 500);
   const lang = textLang(flags);
-  const r = audit(project, { quiet: true });
+  const r = auditResult || audit(project, { quiet: true });
   const g = buildGather(project, flags, r);
   const unique = [...new Set(g.recommendedContextPack)];
   const after = unique.reduce((sum, f) => {
@@ -2731,22 +2825,65 @@ function savings(project, flags = {}) {
 function prune(project, flags = {}) {
   const r = audit(project, { json: true, quiet: true });
   const b = computeBudget(project, flags);
+  const targetLines = Math.max(1, Number(flags['target-lines'] || flags.targetLines || 500));
   const profile = profileFor(project);
-  const authoritative = new Set([
-    ...existing(project, profile.defaultRead),
-    ...profile.scoped.flatMap(([, files]) => existing(project, files)),
-  ]);
+  const defaultRead = new Set(existing(project, profile.defaultRead));
+  const scopedRead = new Set(profile.scoped.flatMap(([, files]) => existing(project, files)));
   const actions = [];
+  const excluded = [];
+  let projectedRemaining = b.beforeLines;
+  const addAction = (action) => {
+    const savings = Math.max(0, Number(action.projectedSavings || 0));
+    projectedRemaining = Math.max(0, projectedRemaining - savings);
+    actions.push({
+      ...action,
+      currentLines: Number(action.currentLines || 0),
+      projectedSavings: savings,
+      projectedRemaining,
+      status: projectedRemaining <= targetLines ? 'on-target' : 'above-target',
+      targetLines,
+      estimate: true,
+    });
+  };
   for (const f of r.large) {
     const role = classify({ path: f.path });
-    if (role === 'archive' || role === 'agent-skill') continue;
-    else if (authoritative.has(f.path)) actions.push({ action: 'summarize-or-index-authoritative-doc', path: f.path, reason: `${f.lines} lines but selected by profile` });
-    else if (!f.path.includes('/archive/')) actions.push({ action: 'archive-or-split', path: f.path, reason: `${f.lines} lines` });
+    if (role === 'archive' || role === 'agent-skill') {
+      excluded.push({ path: f.path, category: role, currentLines: f.lines, reason: 'not an active prune action' });
+      continue;
+    }
+    if (role === 'agent-entry' && r.duplicateEntrySurfaces.length > 1) continue;
+    const isDefault = defaultRead.has(f.path);
+    const isScopedOnly = !isDefault && scopedRead.has(f.path);
+    const category = isDefault ? 'default-read' : isScopedOnly ? 'task-scoped' : 'hot-active';
+    const action = isScopedOnly
+      ? 'summarize-or-index-task-scoped-doc'
+      : isDefault || ['active-memory', 'product-context'].includes(role)
+        ? 'summarize-or-index-authoritative-doc'
+        : 'archive-or-split';
+    const reason = isScopedOnly
+      ? `${f.lines} lines in task-scoped profile read`
+      : isDefault
+        ? `${f.lines} lines in default profile read`
+        : `${f.lines} lines outside profile read sets`;
+    addAction({ action, path: f.path, category, currentLines: f.lines, projectedSavings: Math.max(0, f.lines - Math.min(160, f.lines)), reason });
   }
   if (r.duplicateEntrySurfaces.length > 1) {
-    actions.push({ action: 'dedupe-agent-entry-surfaces', paths: r.duplicateEntrySurfaces.map((f) => f.path), reason: 'multiple agent startup files can conflict' });
+    const currentLines = r.duplicateEntrySurfaces.reduce((sum, f) => sum + f.lines, 0);
+    const projectedSavings = Math.max(0, currentLines - Math.max(...r.duplicateEntrySurfaces.map((f) => f.lines)));
+    addAction({ action: 'dedupe-agent-entry-surfaces', category: 'hot-active', paths: r.duplicateEntrySurfaces.map((f) => f.path), currentLines, projectedSavings, reason: 'multiple agent startup files can duplicate instructions; review before editing' });
   }
-  const plan = { project, mode: 'plan-only', budget: b, actions };
+  const plan = {
+    project,
+    mode: 'plan-only',
+    targetLines,
+    budget: b,
+    baselineLines: b.beforeLines,
+    projectedSavings: Math.max(0, b.beforeLines - projectedRemaining),
+    projectedRemaining,
+    status: projectedRemaining <= targetLines ? 'on-target' : 'above-target',
+    actions,
+    excluded,
+  };
   if (flags.json) console.log(JSON.stringify(plan, null, 2));
   else {
     console.log(`# prune plan\n`);
@@ -2754,8 +2891,9 @@ function prune(project, flags = {}) {
     console.log(`budget after: ${b.afterLines} lines`);
     console.log(`budget saved: ${b.savedLines} lines (${b.savedPct}%)`);
     console.log(`budget status: ${b.status}`);
+    console.log(`prune target: ${targetLines} lines; projected remaining: ${projectedRemaining} (${plan.status})`);
     console.log(``);
-    for (const a of actions) console.log(`- ${a.action}: ${a.path || a.paths.join(', ')} (${a.reason})`);
+    for (const a of actions) console.log(`- ${a.action} [${a.category}]: ${a.path || a.paths.join(', ')} (${a.currentLines} lines, saves ~${a.projectedSavings}, leaves ~${a.projectedRemaining}; ${a.status})`);
     if (!actions.length) console.log('- nothing obvious');
   }
 }
@@ -2831,13 +2969,15 @@ function diffCards(project, flags = {}) {
 
 function conflicts(project, flags = {}) {
   const r = audit(project, { quiet: true });
-  const hints = [];
+  const duplicationHints = [];
+  const consistencyHints = [];
+  const semanticConflicts = [];
   for (const p of ['CLAUDE.md', 'PLAN.md', 'ARCHITECTURE.md', 'STATUS.md']) {
     const f = path.join(project, p);
-    if (fs.existsSync(f)) hints.push({ type: 'possibly-stale-entry', path: p, reason: 'generic active-looking file often drifts; compare with current docs/code' });
+    if (fs.existsSync(f)) consistencyHints.push({ type: 'possibly-stale-entry', path: p, confidence: 'low', reason: 'generic active-looking file may drift; compare with current docs/code' });
   }
   for (const [term, hits] of Object.entries(r.duplicateTerms || {})) {
-    if (hits.length >= 5) hints.push({ type: 'repeated-instruction', term, files: hits.slice(0, 6).map((h) => h.path), reason: 'same concept repeated across many files' });
+    if (hits.length >= 5) duplicationHints.push({ type: 'repeated-term', term, files: hits.slice(0, 6).map((h) => h.path), confidence: 'high', reason: 'same concept repeated across many files; this is not proof of contradiction' });
   }
   const cardRows = [];
   const repoDir = path.join(project, 'hermes/projects');
@@ -2851,15 +2991,32 @@ function conflicts(project, flags = {}) {
       }
     }
   }
-  if (cardRows.length) hints.push({ type: 'hermes-card-drift', files: cardRows, reason: 'repo hermes card differs from ~/.hermes card' });
-  if (flags.json) console.log(JSON.stringify(hints, null, 2));
+  if (cardRows.length) consistencyHints.push({ type: 'hermes-card-drift', files: cardRows, confidence: 'medium', reason: 'repo hermes card differs from ~/.hermes card; review source-of-truth before syncing' });
+  const hints = [...semanticConflicts, ...consistencyHints, ...duplicationHints];
+  const legacyHints = [
+    ...semanticConflicts,
+    ...consistencyHints,
+    ...duplicationHints.map((hint) => ({ ...hint, type: 'repeated-instruction' })),
+  ];
+  const result = { project, version: 2, duplicationHints, consistencyHints, semanticConflicts, hints, legacyHints };
+  if (flags.json) console.log(JSON.stringify(flags.structured ? result : legacyHints, null, 2));
   else {
-    console.log(`# conflict hints\n`);
-    for (const h of hints.slice(0, 40)) {
+    console.log(`# conflict and duplication hints\n`);
+    console.log(`confirmed semantic conflicts: ${semanticConflicts.length}`);
+    for (const h of semanticConflicts.slice(0, 40)) {
       console.log(`- ${h.type}: ${h.path || h.term || (h.files || []).join(', ')} — ${h.reason}`);
     }
-    if (!hints.length) console.log('- no obvious conflict hints');
+    console.log(`consistency hints: ${consistencyHints.length}`);
+    for (const h of consistencyHints.slice(0, 40)) {
+      console.log(`- ${h.type}: ${h.path || h.term || (h.files || []).join(', ')} — ${h.reason}`);
+    }
+    console.log(`duplication hints: ${duplicationHints.length}`);
+    for (const h of duplicationHints.slice(0, 40)) {
+      console.log(`- ${h.type}: ${h.path || h.term || (h.files || []).join(', ')} — ${h.reason}`);
+    }
+    if (!hints.length) console.log('- no obvious consistency or duplication hints');
   }
+  return result;
 }
 
 const BLINDSPOTS = {
@@ -2983,8 +3140,9 @@ function finish(project, flags = {}) {
 
 function policy() {
   console.log(`# write policy\n`);
-  console.log(`report-only by default: audit, gather, budget, prune, score, doctor, conflicts, blindspots, pressure, update, recommend, watch, profile-sync`);
-  console.log(`writes only with --apply: bootstrap, init, maintain, fix-safe, install-adapter, journal, compact-handoff, compact-chat, finish, profile-sync`);
+  console.log(`report-only by default: audit, gather, budget, prune, runs-prune, score, doctor, conflicts, blindspots, pressure, update, recommend, watch, profile-sync`);
+  console.log(`writes only with --apply: bootstrap, init, maintain, fix-safe, install-adapter, journal, compact-handoff, compact-chat, finish, profile-sync, runs-prune`);
+  console.log(`runs-prune retention defaults: keep last ${RUN_RETENTION_DEFAULTS.keepLast} artifacts and artifacts newer than ${RUN_RETENTION_DEFAULTS.keepDays} days; only run-* files are eligible`);
   console.log(`Graphiti writes only with both --apply and --graphiti where supported.`);
   console.log(`No command deletes context. Archive first, journal second.`);
 }
@@ -3107,10 +3265,14 @@ function buildCompiledContext(project, flags = {}) {
   const now = new Date().toISOString();
   const r = audit(project, { quiet: true });
   const budget = computeBudget(project, { brief: true });
-  const contextIndex = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CONTEXT_INDEX.md')), { maxLines: 12 });
-  const currentState = compactLinesFromMarkdown(readTextIfExists(path.join(project, 'docs/CURRENT_STATE.md')), { maxLines: 18 });
-  const worklogFacts = extractRecentFactsFromMarkdown(readTextIfExists(path.join(project, 'docs/WORKLOG.md')), { maxFacts: 10 });
-  const journalFacts = extractRecentFactsFromMarkdown(readTextIfExists(path.join(project, 'docs/CONTEXT_JOURNAL.md')), { maxFacts: 8 });
+  const readStandard = (role) => {
+    const relativePath = standardPath(project, role);
+    return relativePath ? readTextIfExists(path.join(project, relativePath)) : '';
+  };
+  const contextIndex = compactLinesFromMarkdown(readStandard('contextIndex'), { maxLines: 12 });
+  const currentState = compactLinesFromMarkdown(readStandard('currentState'), { maxLines: 18 });
+  const worklogFacts = extractRecentFactsFromMarkdown(readStandard('worklog'), { maxFacts: 10 });
+  const journalFacts = extractRecentFactsFromMarkdown(readStandard('journal'), { maxFacts: 8 });
   const graphiti = graphitiRowsForProject(project, 6);
   const facts = [...worklogFacts, ...journalFacts].slice(-14);
   const touched = [...new Set(facts.flatMap((fact) => fact.files || []))].slice(0, 18);
@@ -3208,23 +3370,68 @@ function compileMemory(project, flags = {}) {
   return compiled;
 }
 
+function fileFreshness(project, relativePath) {
+  const absolutePath = path.join(project, relativePath);
+  if (!fs.existsSync(absolutePath)) return null;
+  const mtimeMs = fs.statSync(absolutePath).mtimeMs;
+  return {
+    path: relativePath,
+    mtimeMs,
+    modifiedAt: new Date(mtimeMs).toISOString(),
+  };
+}
+
+function compiledContextFreshness(project) {
+  const compiled = fileFreshness(project, 'docs/COMPILED_CONTEXT.md');
+  const sources = ['currentState', 'worklog', 'journal']
+    .map((role) => standardPath(project, role))
+    .filter(Boolean)
+    .map((file) => fileFreshness(project, file))
+    .filter(Boolean);
+  const newestSource = sources.slice().sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null;
+  const state = !compiled
+    ? 'missing'
+    : newestSource && newestSource.mtimeMs > compiled.mtimeMs
+      ? 'stale'
+      : 'fresh';
+  return {
+    state,
+    file: 'docs/COMPILED_CONTEXT.md',
+    compiledAt: compiled?.modifiedAt || null,
+    newestSource: newestSource?.path || null,
+    newestSourceAt: newestSource?.modifiedAt || null,
+    sources,
+    reason: state === 'missing'
+      ? 'compiled context does not exist'
+      : state === 'stale'
+        ? `${newestSource.path} is newer than docs/COMPILED_CONTEXT.md`
+        : newestSource
+          ? 'compiled context is at least as new as all source memory files'
+          : 'compiled context exists and no source memory files were found',
+  };
+}
+
 function workflowStatus(project, flags = {}) {
   const r = audit(project, { quiet: true });
   const packResult = buildGather(project, { task: flags.task || flags.query || 'workflow status' }, r);
   const guard = buildToolGuard(project, flags);
-  const compiledExists = fs.existsSync(path.join(project, 'docs/COMPILED_CONTEXT.md'));
-  const journalExists = fs.existsSync(path.join(project, 'docs/CONTEXT_JOURNAL.md'));
-  const worklogExists = fs.existsSync(path.join(project, 'docs/WORKLOG.md'));
+  const compileFreshness = compiledContextFreshness(project);
+  const standardReadiness = (role) => {
+    const relativePath = standardPath(project, role);
+    if (relativePath === null) return 'not-configured';
+    return fs.existsSync(path.join(project, relativePath)) ? 'ready' : 'missing';
+  };
   const result = {
     project,
     state: {
       audit: r.risks.length ? 'warning' : 'ok',
       pack: packResult.recommendedContextPack.length ? 'ready' : 'missing',
-      worklog: worklogExists ? 'ready' : 'missing',
-      journal: journalExists ? 'ready' : 'missing',
-      compile: compiledExists ? 'ready' : 'missing',
+      worklog: standardReadiness('worklog'),
+      journal: standardReadiness('journal'),
+      compile: compileFreshness.state,
       guard: guard.pressureLevel,
     },
+    compileFreshness,
     workflow: [
       'audit',
       'pack',
@@ -3235,7 +3442,7 @@ function workflowStatus(project, flags = {}) {
       'verify',
       'compile-memory',
     ],
-    next: compiledExists
+    next: compileFreshness.state === 'fresh'
       ? [`${commandName()} pack ${quotePath(project)} --task "..."`]
       : [`${commandName()} compile-memory ${quotePath(project)} --apply`],
     risks: r.risks,
@@ -3245,6 +3452,9 @@ function workflowStatus(project, flags = {}) {
     console.log(`# workflow status\n`);
     console.log(`project: ${path.basename(project)}`);
     for (const [key, value] of Object.entries(result.state)) console.log(`- ${key}: ${value}`);
+    console.log(`\ncompile freshness: ${compileFreshness.reason}`);
+    if (compileFreshness.compiledAt) console.log(`- compiled at: ${compileFreshness.compiledAt}`);
+    if (compileFreshness.newestSourceAt) console.log(`- newest source: ${compileFreshness.newestSource} at ${compileFreshness.newestSourceAt}`);
     console.log(`\nworkflow: ${result.workflow.join(' -> ')}`);
     console.log(`\nnext:`);
     for (const item of result.next) console.log(`- ${item}`);
@@ -3269,6 +3479,7 @@ function automationPlan(project, flags = {}) {
       { name: 'smart-compact', command: `${commandName()} compact-chat ${quotePath(project)} --apply`, writes: true, guard: 'only when pressure or hot context threshold is exceeded' },
       { name: 'memory-compile', command: `${commandName()} compile-memory ${quotePath(project)} --apply`, writes: true, guard: 'after meaningful finish/worklog entries' },
       { name: 'prune-plan', command: `${commandName()} prune ${quotePath(project)} --json`, writes: false },
+      { name: 'run-retention', command: `${commandName()} runs-prune ${quotePath(project)} --json`, writes: false, retention: RUN_RETENTION_DEFAULTS },
     ],
     currentPressure: {
       hotContextLines: r.hotContextLines,
@@ -3496,11 +3707,21 @@ function validate(project) {
   const r = audit(project, { json: true, quiet: true });
   const profileRows = loadBundledProfiles();
   const profileProblems = profileRows.flatMap(({ name, profile }) => profileIssues(profile).map((issue) => `${name}:${issue}`));
-  if (r.missing.length || r.risks.includes('large-active-docs') || profileProblems.length) {
+  const budget = r.defaultStart || computeBudget(project, { brief: true }, r);
+  if (r.missing.length || r.risks.length || budget.status === 'over-target' || profileProblems.length) {
+    const contributors = [...r.activeMemory, ...r.duplicateEntrySurfaces, ...r.large]
+      .filter((item) => !['archive', 'agent-skill'].includes(classify({ path: item.path })))
+      .filter((item, index, rows) => rows.findIndex((candidate) => candidate.path === item.path) === index)
+      .sort((a, b) => b.lines - a.lines)
+      .slice(0, 5);
     console.log('context validation: warning');
     if (r.missing.length) console.log(`missing: ${r.missing.join(', ')}`);
     if (r.risks.length) console.log(`risks: ${r.risks.join(', ')}`);
     if (profileProblems.length) console.log(`profile issues: ${profileProblems.join(', ')}`);
+    console.log(`hot context: actual ${r.hotContextLines} lines; target <= 800 lines`);
+    console.log(`default start: actual ${budget.afterLines} lines; target <= ${budget.targetLines} lines`);
+    if (contributors.length) console.log(`top contributors: ${contributors.map((item) => `${item.path} (${item.lines} lines)`).join(', ')}`);
+    console.log(`recommended command: ${nextFromAudit(r, project).command}`);
     process.exitCode = 1;
   } else {
     console.log('context validation: ok');
@@ -3519,7 +3740,7 @@ function doctor(project, flags = {}) {
     ['handoff-compact', !fs.existsSync(path.join(project, 'handoff.md')) || lineCount(path.join(project, 'handoff.md')) <= 260, 'handoff should stay compact', 'long handoffs become raw transcripts and confuse later sessions', `${commandName()} compact-handoff ${quotePath(project)} --file handoff.md --apply`],
     ['skills-router-only', r.duplicateEntrySurfaces.length <= 8, `${r.duplicateEntrySurfaces.length} agent entry surfaces`, 'too many entry surfaces can create competing instructions', `${commandName()} audit ${quotePath(project)}`],
     ['graphiti-safe', true, 'Graphiti writes require explicit --graphiti/--apply', 'durable machine memory should stay sourced and intentional', `${commandName()} finish ${quotePath(project)} --apply --graphiti`],
-    ['contradiction-surface', r.duplicateTerms && Object.keys(r.duplicateTerms).length < 16, `${Object.keys(r.duplicateTerms || {}).length} repeated-term clusters`, 'repeated themes across active docs often mean stale plans are mixed with current truth', `${commandName()} conflicts ${quotePath(project)}`],
+    ['duplication-surface', r.duplicateTerms && Object.keys(r.duplicateTerms).length < 16, `${Object.keys(r.duplicateTerms || {}).length} repeated-term clusters`, 'repeated themes are duplication hints, not proof of contradiction; review source ownership before cleanup', `${commandName()} conflicts ${quotePath(project)} --structured`],
     ['migration-contained', !(r.duplicateTerms.migration && r.duplicateTerms.migration.length > 8), 'migration terms should live in migration docs', 'migration notes should not become the default source of current behavior', `${commandName()} prune ${quotePath(project)}`],
     ['fast-session-start', !contextIndex || r.missing.includes(contextIndex) === false, `${contextIndex || 'context index'} enables fast startup`, 'without an index, every agent has to rediscover the project map', `${commandName()} bootstrap ${quotePath(project)} --apply`],
     ['journal-present', !journalRel || fs.existsSync(path.join(project, journalRel)), 'journal records context changes', 'without a journal, context edits cannot be audited later', `${commandName()} bootstrap ${quotePath(project)} --apply`],
@@ -3559,6 +3780,7 @@ async function main() {
   else if (cmd === 'tool-guard' || cmd === 'guard') toolGuard(project, flags);
   else if (cmd === 'compress-output' || cmd === 'compress') compressOutput(project, flags);
   else if (cmd === 'run') runWrapped(project, flags);
+  else if (cmd === 'runs-prune') runsPrune(project, flags);
   else if (cmd === 'token-burn' || cmd === 'tokens') tokenBurn(project, flags);
   else if (cmd === 'spend-guard' || cmd === 'cost-guard') spendGuard(project, flags);
   else if (cmd === 'caveman') caveman(project, flags);
