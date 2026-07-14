@@ -97,6 +97,8 @@ larp pitch /path/to/project
 larp recommend /path/to/project
 larp pack /path/to/project --task "..."
 larp prune /path/to/project
+larp runs-prune /path/to/project --keep-days 14 --keep-last 20
+larp conflicts /path/to/project --json --structured
 larp doctor /path/to/project
 larp pressure /path/to/project --brief
 larp repo-map /path/to/project --task "..."
@@ -110,6 +112,10 @@ larp bootstrap /path/to/project --apply
 larp journal /path/to/project --type session --note "..." --apply
 larp finish /path/to/project --done "..." --next "..." --evidence "..." --apply
 ```
+
+`runs-prune` is dry-run by default and only considers `run-*` artifacts. It keeps complete run groups, including stdout/stderr/metadata siblings; pass `--apply` only after reviewing the candidate list.
+
+`conflicts --json` keeps the legacy array response. Use `--json --structured` for version 2 output with separate `semanticConflicts`, `consistencyHints`, and `duplicationHints` fields.
 
 Aliases:
 `larpkeeper`, `larp`, `lorekeeper`, `lore`, `context-gardener`

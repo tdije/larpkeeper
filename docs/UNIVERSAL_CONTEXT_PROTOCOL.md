@@ -54,7 +54,8 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `setup`: one-command bootstrap + adapter install, optionally shell prompt hook.
 - `bootstrap`: create the project context skeleton.
 - `pack`: emit minimal read list for a task.
-- `prune`: propose archive/split/update actions.
+- `prune`: propose archive/split/update actions with categories, projected remaining budget, and excluded archive/skill files.
+- `runs-prune`: dry-run retention for grouped `.larpkeeper/runs` artifacts; requires explicit `--apply` to delete.
 - `maintain`: safe upkeep for missing docs, long handoffs, and journal notes.
 - `fix-safe`: safe maintenance alias.
 - `recommend` / `next`: suggest the next best command.
@@ -65,7 +66,7 @@ Adapters must not contain project truth. They only route agents to the CLI and a
 - `statusline`: print a prompt-sized console signal.
 - `install-shell-hook`: add the zsh prompt integration.
 - `compact-chat`: create a compact handoff draft before context compaction.
-- `conflicts`: show stale-looking files, repeated instructions, and Hermes card drift.
+- `conflicts`: separate confirmed semantic conflicts, consistency hints, and repeated-term duplication hints. Use `--structured` for the v2 JSON shape.
 - `journal`: append durable maintenance events.
 - `finish`: close a session with done/next/evidence and memory candidates.
 - project-local `scripts/task-done.sh`: close meaningful feature/fix/deploy work with one structured completion record when installed.
